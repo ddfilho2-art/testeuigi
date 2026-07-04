@@ -53,16 +53,16 @@ app.use("/api", pdfRoutes);
 // VITE CLIENT INITIALIZATION OR PRODUCTION FALLBACK
 // ---------------------------------------------
 async function startServer() {
+  // On Vercel the server runs as a serverless function; static files are
+  // served by the platform and the Vite dev middleware must never load.
   if (process.env.VERCEL) {
-    // Vercel handles serving static files directly and uses server as a serverless function.
     return;
   }
 
   if (process.env.NODE_ENV !== "production") {
     // Dynamic specifier so @vercel/node's esbuild cannot statically trace and
     // bundle Vite (a devDependency absent from the production install). This
-    // branch is dev-only and never executes on Vercel (the VERCEL guard above
-    // returns first).
+    // branch is dev-only and never executes on Vercel.
     const viteModuleName = "vite";
     const { createServer: createViteServer } = await import(viteModuleName);
     const vite = await createViteServer({
