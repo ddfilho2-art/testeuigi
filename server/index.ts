@@ -25,6 +25,17 @@ import pdfRoutes from "./routes/pdf";
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// CORS — must be first middleware so preflight OPTIONS is handled before any route.
+// Without this, the browser's preflight returns 405 and all POST/PUT calls fail.
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 app.use(express.json({ limit: "10mb" }));
 
 // All API routes are mounted under /api
