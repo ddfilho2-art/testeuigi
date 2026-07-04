@@ -59,7 +59,12 @@ async function startServer() {
   }
 
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
+    // Dynamic specifier so @vercel/node's esbuild cannot statically trace and
+    // bundle Vite (a devDependency absent from the production install). This
+    // branch is dev-only and never executes on Vercel (the VERCEL guard above
+    // returns first).
+    const viteModuleName = "vite";
+    const { createServer: createViteServer } = await import(viteModuleName);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
