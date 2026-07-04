@@ -5,6 +5,7 @@ import { calculateLocalScore } from '../lib/score';
 import { sendSubmissionNotification } from '../lib/email';
 import { signDownloadToken } from '../lib/jwt';
 import { cleanCNPJ } from '../lib/cnpj';
+import { checkCompanyAccess } from '../lib/company';
 import type { Submission } from '../../src/types';
 
 const router = express.Router();
@@ -36,6 +37,14 @@ router.post('/assessment/submit', async (req, res) => {
 
   if (!cnpj || !company_name || !respondent_name || !respondent_email || !answers) {
     return res.status(400).json({ error: 'Dados incompletos para envio.' });
+  }
+
+  // Server-side gate: refuse submissions for CNPJs that are not registered,
+  // disabled, or outside their enabled window. Prevents direct API callers
+  // from injecting responses for arbitrary companies.
+  const access = await checkCompanyAccess(cnpj);
+  if (!access.valid) {
+    return res.status(403).json({ error: access.error || 'CNPJ não autorizado para envio.' });
   }
 
   const supabase = getSupabase();
