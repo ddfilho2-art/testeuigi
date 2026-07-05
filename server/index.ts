@@ -21,6 +21,7 @@ import questionsRoutes from "./routes/questions";
 import submissionsRoutes from "./routes/submissions";
 import adminRoutes from "./routes/admin";
 import pdfRoutes from "./routes/pdf";
+import probeRoutes from "./routes/probe";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -39,6 +40,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "10mb" }));
 
 // All API routes are mounted under /api
+app.use("/api", probeRoutes);
 app.use("/api", authRoutes);
 app.use("/api", supabaseRoutes);
 app.use("/api", cnpjRoutes);
@@ -48,6 +50,11 @@ app.use("/api", questionsRoutes);
 app.use("/api", submissionsRoutes);
 app.use("/api", adminRoutes);
 app.use("/api", pdfRoutes);
+
+// Startup beacon so Vercel function logs confirm the Express app actually
+// loaded and registered routes (vs. the platform answering 404 before any
+// function ran).
+console.log('[server/index] Express app initialized. VERCEL=' + !!process.env.VERCEL, 'routes=/api mounted');
 
 // ---------------------------------------------
 // VITE CLIENT INITIALIZATION OR PRODUCTION FALLBACK

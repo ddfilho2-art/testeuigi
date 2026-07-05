@@ -15,6 +15,12 @@
 // returns early — no competing app.listen() and no Vite dev middleware.
 import app from "./server/index";
 
+// Startup beacon: confirms Vercel actually loaded THIS root entrypoint and
+// captured app.listen(). If this never appears in the function logs, Vercel
+// did not detect the server entrypoint (e.g. framework auto-detection overrode
+// it) — which is exactly the 404-before-function scenario we're diagnosing.
+console.log('[server.ts] root entrypoint loaded. VERCEL=' + !!process.env.VERCEL, 'PORT_env=' + (process.env.PORT || '(unset)'));
+
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => {
   // On Vercel the port isn't public; this only prints when running locally.

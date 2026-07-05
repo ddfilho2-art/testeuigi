@@ -8,33 +8,39 @@ const router = express.Router();
 // Admin login
 router.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
+  console.log('[auth/login] hit. method=' + req.method, 'url=' + req.url, 'hasEmail=' + !!email, 'hasPassword=' + !!password);
   const adminEmail = getAdminEmail();
   const adminPassword = getAdminPassword();
 
   // 1. Local admin credentials
   if (email === adminEmail && password === adminPassword) {
+    console.log('[auth/login] local admin credentials matched -> success');
     const token = signAdminToken(adminEmail);
     return res.json({ success: true, token });
   }
 
   // 2. Supabase Auth
   const supabase = getSupabaseAuth();
+  console.log('[auth/login] supabase auth client available:', !!supabase);
   if (supabase) {
     try {
+      console.log('[auth/login] calling supabase.auth.signInWithPassword...');
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (data?.session) {
+        console.log('[auth/login] supabase session obtained -> success');
         return res.json({ success: true, token: data.session.access_token });
       }
       if (error) {
-        console.error('Supabase auth error:', error.message);
+        console.error('[auth/login] supabase auth error:', error.message);
         return res.status(401).json({ error: `Erro no Supabase: ${error.message}` });
       }
     } catch (err: any) {
-      console.error('Supabase login error:', err);
+      console.error('[auth/login] supabase login error:', err);
       return res.status(401).json({ error: 'Credenciais inválidas. Verifique o email e senha.' });
     }
   }
 
+  console.log('[auth/login] no match, returning 401');
   return res.status(401).json({ error: 'Credenciais inválidas. Verifique o email e senha.' });
 });
 
