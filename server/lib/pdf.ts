@@ -69,10 +69,10 @@ export async function generatePdfBuffer(submission: Submission): Promise<Buffer>
 
   drawMetaText('Empresa', submission.company_name, 45, yPos - 20);
   drawMetaText('CNPJ', submission.cnpj, 350, yPos - 20);
-  drawMetaText('Colaborador', submission.respondent_name, 45, yPos - 40);
-  drawMetaText('E-mail', submission.respondent_email, 350, yPos - 40);
-  drawMetaText('Período de Início', new Date(submission.start_time).toLocaleString('pt-BR'), 45, yPos - 60);
-  drawMetaText('Período de Término', new Date(submission.end_time).toLocaleString('pt-BR'), 350, yPos - 60);
+  drawMetaText('Área', submission.area || 'Geral', 45, yPos - 40);
+  drawMetaText('Colaborador', submission.respondent_name, 350, yPos - 40);
+  drawMetaText('E-mail', submission.respondent_email, 45, yPos - 60);
+  drawMetaText('Período de Início', new Date(submission.start_time).toLocaleString('pt-BR'), 350, yPos - 60);
 
   // 4. SCORE BAR & CLASSIFICATION CALLOUT
   yPos = yPos - 100;

@@ -19,6 +19,9 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
   const [cnpj, setCnpj] = useState('');
   const [respondentName, setRespondentName] = useState('');
   const [respondentEmail, setRespondentEmail] = useState('');
+  const [areas, setAreas] = useState<string[]>([]);
+  const [selectedArea, setSelectedArea] = useState('');
+  const [submittedAreas, setSubmittedAreas] = useState<string[]>([]);
   const [isValidating, setIsValidating] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [lgpdAccepted, setLgpdAccepted] = useState(false);
@@ -38,6 +41,38 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
   const [showDraftPrompt, setShowDraftPrompt] = useState(false);
   const [pendingDraft, setPendingDraft] = useState<{ answers: Record<string, string | number>; currentSectionIndex: number } | null>(null);
 
+  const handleSelectArea = (area: string) => {
+    if (!area) {
+      setSelectedArea('');
+      return;
+    }
+    if (submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase())) {
+      const replace = window.confirm(
+        'Esse formulário para essa área já foi preenchido. Deseja preencher novamente? A nova resposta substituirá a anterior.',
+      );
+      if (!replace) {
+        setSelectedArea('');
+        return;
+      }
+    }
+    setSelectedArea(area);
+    setAnswers({});
+    setCurrentSectionIndex(0);
+    setPendingDraft(null);
+
+    const draftKey = `assessment_draft_${validatedCnpj}_${area}_${respondentEmail}`;
+    const savedDraft = localStorage.getItem(draftKey);
+    if (savedDraft) {
+      try {
+        const parsed = JSON.parse(savedDraft);
+        setPendingDraft(parsed);
+        setShowDraftPrompt(true);
+      } catch (err) {
+        console.error('Error parsing draft:', err);
+      }
+    }
+  };
+
   const handleLoadDraft = () => {
     if (pendingDraft) {
       setAnswers(pendingDraft.answers);
@@ -48,8 +83,8 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
 
   const handleDiscardDraft = () => {
     const activeCnpj = validatedCnpj || cnpj;
-    if (activeCnpj && respondentEmail) {
-      const draftKey = `assessment_draft_${activeCnpj}_${respondentEmail}`;
+    if (activeCnpj && respondentEmail && selectedArea) {
+      const draftKey = `assessment_draft_${activeCnpj}_${selectedArea}_${respondentEmail}`;
       localStorage.removeItem(draftKey);
     }
     setShowDraftPrompt(false);
@@ -132,21 +167,14 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       if (response.ok && data.valid) {
         setCompanyName(data.companyName);
         setValidatedCnpj(data.cnpj);
+        setAreas(data.areas || ['Geral']);
+        setSubmittedAreas(data.submittedAreas || []);
+        setSelectedArea('');
         setStartTime(new Date().toISOString());
         setStep('checklist');
 
-        // Check for saved draft for this CNPJ + respondentEmail
-        const draftKey = `assessment_draft_${data.cnpj}_${respondentEmail}`;
-        const savedDraft = localStorage.getItem(draftKey);
-        if (savedDraft) {
-          try {
-            const parsed = JSON.parse(savedDraft);
-            setPendingDraft(parsed);
-            setShowDraftPrompt(true);
-          } catch (err) {
-            console.error('Error parsing draft:', err);
-          }
-        }
+        // Check for saved draft for this CNPJ + respondentEmail + area once
+        // an area is selected below.
       } else {
         setAuthError(data.error || 'Acesso negado. Verifique o CNPJ ou consulte a administração.');
       }
@@ -170,8 +198,8 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       };
       
       // Save draft automatically
-      if (validatedCnpj && respondentEmail) {
-        const draftKey = `assessment_draft_${validatedCnpj}_${respondentEmail}`;
+      if (validatedCnpj && respondentEmail && selectedArea) {
+        const draftKey = `assessment_draft_${validatedCnpj}_${selectedArea}_${respondentEmail}`;
         localStorage.setItem(draftKey, JSON.stringify({
           answers: updated,
           currentSectionIndex: currentSectionIndex,
@@ -198,8 +226,8 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       setCurrentSectionIndex(nextIdx);
       
       // Save progress with new section index
-      if (validatedCnpj && respondentEmail) {
-        const draftKey = `assessment_draft_${validatedCnpj}_${respondentEmail}`;
+      if (validatedCnpj && respondentEmail && selectedArea) {
+        const draftKey = `assessment_draft_${validatedCnpj}_${selectedArea}_${respondentEmail}`;
         localStorage.setItem(draftKey, JSON.stringify({
           answers: answers,
           currentSectionIndex: nextIdx,
@@ -218,8 +246,8 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       setCurrentSectionIndex(prevIdx);
       
       // Save progress with new section index
-      if (validatedCnpj && respondentEmail) {
-        const draftKey = `assessment_draft_${validatedCnpj}_${respondentEmail}`;
+      if (validatedCnpj && respondentEmail && selectedArea) {
+        const draftKey = `assessment_draft_${validatedCnpj}_${selectedArea}_${respondentEmail}`;
         localStorage.setItem(draftKey, JSON.stringify({
           answers: answers,
           currentSectionIndex: prevIdx,
@@ -232,6 +260,10 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
   };
 
   const handleSubmitAssessment = async () => {
+    if (!selectedArea) {
+      alert('Selecione a área que está respondendo o formulário.');
+      return;
+    }
     if (!isCurrentSectionComplete()) {
       alert('Por favor, responda a todas as perguntas da última seção antes de enviar.');
       return;
@@ -241,6 +273,7 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
 
     const submissionPayload = {
       cnpj: validatedCnpj,
+      area: selectedArea,
       company_name: companyName,
       respondent_name: respondentName,
       respondent_email: respondentEmail,
@@ -259,12 +292,14 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       const data = await r.json();
 
       if (r.ok && data.success) {
-        // Clear saved draft on successful submission
-        if (validatedCnpj && respondentEmail) {
-          const draftKey = `assessment_draft_${validatedCnpj}_${respondentEmail}`;
-          localStorage.removeItem(draftKey);
-        }
-        onSubmissionSuccess(data);
+        const draftKey = `assessment_draft_${validatedCnpj}_${selectedArea}_${respondentEmail}`;
+        localStorage.removeItem(draftKey);
+        onSubmissionSuccess({
+          ...data,
+          respondent_name: respondentName,
+          company_name: companyName,
+          area: selectedArea,
+        });
       } else {
         alert(data.error || 'Erro ao enviar questionário. Tente novamente.');
       }
@@ -429,15 +464,39 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
               exit={{ opacity: 0, x: -15 }}
               className="space-y-6"
             >
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs">
+                <label className="block text-2xs font-bold text-slate-600 mb-2 uppercase tracking-wide">
+                  Área que está respondendo
+                </label>
+                <select
+                  required
+                  value={selectedArea}
+                  onChange={(e) => handleSelectArea(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800"
+                  id="input-client-area"
+                >
+                  <option value="">Selecione uma área</option>
+                  {areas.map((area) => (
+                    <option key={area} value={area}>
+                      {area}{submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase()) ? ' (já preenchida)' : ''}
+                    </option>
+                  ))}
+                </select>
+                {submittedAreas.length > 0 && (
+                  <p className="mt-2 text-3xs text-amber-700">
+                    Áreas marcadas como já preenchidas pedirão confirmação antes de substituir a resposta anterior.
+                  </p>
+                )}
+              </div>
+
               {/* Progress Tracker */}
               <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs">
                 <div className="flex justify-between items-center text-2xs font-bold text-slate-400 mb-3 font-mono">
                   <span>PROGRESSO DA AVALIAÇÃO</span>
                   <span className="text-blue-700 font-semibold">SEÇÃO {currentSectionIndex + 1} DE {sections.length}</span>
                 </div>
-                {/* Horizontal Progress bar */}
                 <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                  <div 
+                  <div
                     className="bg-blue-600 h-full transition-all duration-300"
                     style={{ width: `${((currentSectionIndex + 1) / sections.length) * 100}%` }}
                   />
@@ -567,7 +626,7 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                   <button
                     type="button"
                     onClick={handleSubmitAssessment}
-                    disabled={isSubmitting || !isCurrentSectionComplete()}
+                    disabled={isSubmitting || !selectedArea || !isCurrentSectionComplete()}
                     className="py-2.5 px-6 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:border-slate-200 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-md border border-blue-600 transition-colors"
                   >
                     {isSubmitting ? (

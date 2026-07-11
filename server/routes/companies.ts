@@ -1,7 +1,8 @@
 import express from 'express';
 import { getSupabase } from '../lib/supabase';
-import { fallbackCompanies } from '../state';
+import { fallbackCompanies, fallbackResponses } from '../state';
 import { cleanCNPJ } from '../lib/cnpj';
+import { normalizeAreas } from '../lib/company';
 import { authenticateAdmin } from '../lib/auth';
 import type { Company } from '../../src/types';
 
@@ -12,7 +13,7 @@ router.get('/admin/companies', authenticateAdmin, async (_req, res) => {
   if (supabase) {
     try {
       const { data, error } = await supabase.from('companies').select('*').order('created_at', { ascending: false });
-      if (!error) return res.json(data);
+      if (!error) return res.json((data || []).map((company: Company) => ({ ...company, areas: normalizeAreas(company.areas) })));
     } catch (err) {
       console.error('Error listing companies from Supabase:', err);
     }
@@ -21,52 +22,66 @@ router.get('/admin/companies', authenticateAdmin, async (_req, res) => {
 });
 
 router.post('/admin/companies', authenticateAdmin, async (req, res) => {
-  const company: Company = req.body;
-  if (!company || !company.cnpj || !company.name || !company.enabled_from || !company.enabled_until) {
+  const input = req.body as Partial<Company>;
+  if (!input?.cnpj || !input.name || !input.enabled_from || !input.enabled_until) {
     return res.status(400).json({ error: 'CNPJ, nome e período de habilitação são obrigatórios.' });
   }
-  // Normalize CNPJ to digits-only so validate() can match with a single eq().
-  company.cnpj = cleanCNPJ(company.cnpj);
+
+  const company: Company = {
+    cnpj: cleanCNPJ(input.cnpj),
+    name: String(input.name).trim(),
+    enabled: input.enabled !== false,
+    enabled_from: input.enabled_from,
+    enabled_until: input.enabled_until,
+    areas: normalizeAreas(input.areas),
+  };
   if (company.cnpj.length !== 14) {
     return res.status(400).json({ error: 'CNPJ inválido. Deve conter 14 dígitos numéricos.' });
   }
+  if (company.enabled_from > company.enabled_until) {
+    return res.status(400).json({ error: 'A data inicial não pode ser posterior à data final.' });
+  }
 
   const supabase = getSupabase();
-
   if (supabase) {
     try {
       const { data, error } = await supabase.from('companies').insert([company]).select();
       if (error) {
-        if (error.code === '23505') {
-          return res.status(400).json({ error: 'Este CNPJ já está cadastrado.' });
-        }
+        if (error.code === '23505') return res.status(400).json({ error: 'Este CNPJ já está cadastrado.' });
         throw error;
       }
-      return res.json(data[0]);
+      return res.json({ ...data[0], areas: normalizeAreas(data[0].areas) });
     } catch (err: any) {
       console.warn('Erro ao salvar empresa no Supabase, usando fallback local:', err.message || err);
     }
   }
 
-  if (fallbackCompanies.some(c => cleanCNPJ(c.cnpj) === cleanCNPJ(company.cnpj))) {
+  if (fallbackCompanies.some(c => cleanCNPJ(c.cnpj) === company.cnpj)) {
     return res.status(400).json({ error: 'Este CNPJ já está cadastrado.' });
   }
-  const newCompany = { ...company, id: company.id || Math.random().toString(36).substr(2, 9) };
+  const newCompany = { ...company, id: Math.random().toString(36).slice(2, 11) };
   fallbackCompanies.push(newCompany);
   return res.json(newCompany);
 });
 
 router.put('/admin/companies/:id', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
-  const company: Company = req.body;
-  // CNPJ is the unique business key; never let an update change it.
-  delete (company as any).cnpj;
-  const supabase = getSupabase();
+  const input = req.body as Partial<Company>;
+  const update: Partial<Company> = {};
+  if (input.name !== undefined) update.name = String(input.name).trim();
+  if (input.enabled !== undefined) update.enabled = Boolean(input.enabled);
+  if (input.enabled_from !== undefined) update.enabled_from = input.enabled_from;
+  if (input.enabled_until !== undefined) update.enabled_until = input.enabled_until;
+  if (input.areas !== undefined) update.areas = normalizeAreas(input.areas);
+  if (update.enabled_from && update.enabled_until && update.enabled_from > update.enabled_until) {
+    return res.status(400).json({ error: 'A data inicial não pode ser posterior à data final.' });
+  }
 
+  const supabase = getSupabase();
   if (supabase) {
     try {
-      const { data, error } = await supabase.from('companies').update(company).eq('id', id).select();
-      if (!error && data && data.length > 0) return res.json(data[0]);
+      const { data, error } = await supabase.from('companies').update(update).eq('id', id).select();
+      if (!error && data && data.length > 0) return res.json({ ...data[0], areas: normalizeAreas(data[0].areas) });
       if (error) throw error;
     } catch (err: any) {
       console.warn('Erro ao atualizar empresa no Supabase, usando fallback local:', err.message || err);
@@ -75,7 +90,7 @@ router.put('/admin/companies/:id', authenticateAdmin, async (req, res) => {
 
   const idx = fallbackCompanies.findIndex(c => c.id === id || c.cnpj === id);
   if (idx !== -1) {
-    fallbackCompanies[idx] = { ...fallbackCompanies[idx], ...company };
+    fallbackCompanies[idx] = { ...fallbackCompanies[idx], ...update, areas: normalizeAreas(update.areas ?? fallbackCompanies[idx].areas) };
     return res.json(fallbackCompanies[idx]);
   }
   return res.status(404).json({ error: 'Empresa não encontrada.' });
@@ -84,9 +99,19 @@ router.put('/admin/companies/:id', authenticateAdmin, async (req, res) => {
 router.delete('/admin/companies/:id', authenticateAdmin, async (req, res) => {
   const { id } = req.params;
   const supabase = getSupabase();
-
   if (supabase) {
     try {
+      const { data: company, error: lookupError } = await supabase
+        .from('companies')
+        .select('cnpj')
+        .eq('id', id)
+        .maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!company) return res.status(404).json({ error: 'Empresa não encontrada.' });
+
+      const { error: responsesError } = await supabase.from('responses').delete().eq('cnpj', company.cnpj);
+      if (responsesError) throw responsesError;
+
       const { error } = await supabase.from('companies').delete().eq('id', id);
       if (error) throw error;
       return res.json({ success: true });
@@ -97,7 +122,13 @@ router.delete('/admin/companies/:id', authenticateAdmin, async (req, res) => {
 
   const idx = fallbackCompanies.findIndex(c => c.id === id || c.cnpj === id);
   if (idx !== -1) {
+    const deletedCnpj = cleanCNPJ(fallbackCompanies[idx].cnpj);
     fallbackCompanies.splice(idx, 1);
+    for (let responseIndex = fallbackResponses.length - 1; responseIndex >= 0; responseIndex -= 1) {
+      if (cleanCNPJ(fallbackResponses[responseIndex].cnpj) === deletedCnpj) {
+        fallbackResponses.splice(responseIndex, 1);
+      }
+    }
     return res.json({ success: true });
   }
   return res.status(404).json({ error: 'Empresa não encontrada.' });

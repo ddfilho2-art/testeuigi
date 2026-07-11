@@ -163,7 +163,9 @@ router.post('/admin/email-config', authenticateAdmin, (req, res) => {
   emailConfig.smtpSecure = smtpSecure !== undefined ? smtpSecure : emailConfig.smtpSecure;
 
   saveEmailConfig();
-  return res.json({ success: true, config: emailConfig });
+  const safeConfig = { ...emailConfig };
+  if (safeConfig.smtpPassword) safeConfig.smtpPassword = '********';
+  return res.json({ success: true, config: safeConfig });
 });
 
 // Send test email

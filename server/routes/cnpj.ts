@@ -13,7 +13,13 @@ router.post('/cnpj/validate', async (req, res) => {
   if (!result.valid) {
     return res.json({ valid: false, error: result.error });
   }
-  return res.json({ valid: true, companyName: result.company!.name, cnpj: result.company!.cnpj });
+  return res.json({
+    valid: true,
+    companyName: result.company!.name,
+    cnpj: result.company!.cnpj,
+    areas: result.areas,
+    submittedAreas: result.submittedAreas,
+  });
 });
 
 export default router;

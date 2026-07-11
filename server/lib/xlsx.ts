@@ -6,6 +6,7 @@ export function buildExcelBuffer(submissions: Submission[]): Buffer {
     const row: Record<string, any> = {
       'Nº': idx + 1,
       'CNPJ da Empresa': sub.cnpj,
+      'Área': sub.area || 'Geral',
       'Nome da Empresa': sub.company_name,
       'Nome do Respondente': sub.respondent_name,
       'E-mail do Respondente': sub.respondent_email,

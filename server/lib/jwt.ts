@@ -38,34 +38,3 @@ export function verifyAdminToken(token: string): AdminJwtPayload | null {
     return null;
   }
 }
-
-// Short-lived token granting download of a single submission's PDF.
-// Issued at submission time for the respondent, and to admins for any record.
-export interface DownloadJwtPayload {
-  type: 'pdf';
-  cnpj: string;          // normalized CNPJ the token is scoped to
-  id?: string;           // optional: a specific response id
-  iat?: number;
-  exp?: number;
-}
-
-export function signDownloadToken(cnpj: string, id?: string): string {
-  const options: SignOptions = {
-    expiresIn: (process.env.PDF_TOKEN_EXPIRES_IN || '30m') as any,
-  };
-  return jwt.sign(
-    { type: 'pdf', cnpj, id } as DownloadJwtPayload,
-    getSecret(),
-    options
-  );
-}
-
-export function verifyDownloadToken(token: string): DownloadJwtPayload | null {
-  try {
-    const payload = jwt.verify(token, getSecret()) as DownloadJwtPayload;
-    if (payload.type !== 'pdf') return null;
-    return payload;
-  } catch (err) {
-    return null;
-  }
-}

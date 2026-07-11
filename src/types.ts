@@ -10,6 +10,7 @@ export interface Company {
   enabled: boolean;
   enabled_from: string; // ISO date string (YYYY-MM-DD)
   enabled_until: string; // ISO date string (YYYY-MM-DD)
+  areas: string[];
   created_at?: string;
 }
 
@@ -44,6 +45,7 @@ export interface CalculationResult {
 export interface Submission {
   id?: string;
   cnpj: string;
+  area: string;
   company_name: string;
   respondent_name: string;
   respondent_email: string;

@@ -2,22 +2,21 @@ import React from 'react';
 import { CheckCircle, ArrowRight } from 'lucide-react';
 import { CompanyLogo } from './CompanyLogo';
 
-interface AssessmentResultProps {
-  submissionData: {
-    company_name: string;
-    respondent_name: string;
-    area?: string;
-  };
+interface SubmissionConfirmationProps {
+  respondentName: string;
+  companyName: string;
+  area: string;
+  replaced?: boolean;
   onBackToHome: () => void;
 }
 
-/**
- * Legacy route-safe confirmation view. Respondents never receive scores or
- * report links; reports are available only from the administrator dashboard.
- */
-export default function AssessmentResult({ submissionData, onBackToHome }: AssessmentResultProps) {
-  const { company_name, respondent_name, area } = submissionData;
-
+export default function SubmissionConfirmation({
+  respondentName,
+  companyName,
+  area,
+  replaced,
+  onBackToHome,
+}: SubmissionConfirmationProps) {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between py-10 px-4">
       <main className="flex-1 flex items-center justify-center">
@@ -28,8 +27,13 @@ export default function AssessmentResult({ submissionData, onBackToHome }: Asses
           </div>
           <h1 className="text-xl font-bold text-slate-900">Formulário enviado com sucesso</h1>
           <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-            Obrigado, {respondent_name}. Sua resposta{area ? ` da área ${area}` : ''} para a empresa <strong>{company_name}</strong> foi registrada.
+            Obrigado, {respondentName}. Sua resposta da área <strong>{area}</strong> para a empresa <strong>{companyName}</strong> foi registrada.
           </p>
+          {replaced && (
+            <p className="mt-4 rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+              A resposta anterior desta área foi substituída por este preenchimento.
+            </p>
+          )}
           <p className="text-xs text-slate-500 mt-4 leading-relaxed">
             O relatório e os resultados ficam disponíveis exclusivamente para o administrador responsável.
           </p>

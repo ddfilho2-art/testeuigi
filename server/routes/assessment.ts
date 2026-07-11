@@ -3,9 +3,8 @@ import { getSupabase } from '../lib/supabase';
 import { fallbackQuestions, fallbackResponses } from '../state';
 import { calculateLocalScore } from '../lib/score';
 import { sendSubmissionNotification } from '../lib/email';
-import { signDownloadToken } from '../lib/jwt';
 import { cleanCNPJ } from '../lib/cnpj';
-import { checkCompanyAccess } from '../lib/company';
+import { checkCompanyAccess, normalizeAreas } from '../lib/company';
 import type { Submission } from '../../src/types';
 
 const router = express.Router();
@@ -21,9 +20,7 @@ router.get('/assessment/questions', async (_req, res) => {
         .order('section_id', { ascending: true })
         .order('id', { ascending: true });
 
-      if (!error && data && data.length > 0) {
-        return res.json(data);
-      }
+      if (!error && data && data.length > 0) return res.json(data);
     } catch (err) {
       console.error('Error fetching questions from Supabase:', err);
     }
@@ -31,42 +28,55 @@ router.get('/assessment/questions', async (_req, res) => {
   return res.json([...fallbackQuestions].sort((a, b) => a.section_id - b.section_id));
 });
 
-// Submit Assessment (Uses Supabase RPC if available, else fallback local computation)
+// Submit one current response per company/area. A later submission replaces
+// the previous response for the same CNPJ and area.
 router.post('/assessment/submit', async (req, res) => {
-  const { cnpj, company_name, respondent_name, respondent_email, start_time, end_time, answers } = req.body;
+  const {
+    cnpj,
+    area,
+    company_name,
+    respondent_name,
+    respondent_email,
+    start_time,
+    end_time,
+    answers,
+  } = req.body;
 
-  if (!cnpj || !company_name || !respondent_name || !respondent_email || !answers) {
-    return res.status(400).json({ error: 'Dados incompletos para envio.' });
+  if (!cnpj || !area || !company_name || !respondent_name || !respondent_email || !answers) {
+    return res.status(400).json({ error: 'CNPJ, área, dados do respondente e respostas são obrigatórios.' });
   }
 
-  // Server-side gate: refuse submissions for CNPJs that are not registered,
-  // disabled, or outside their enabled window. Prevents direct API callers
-  // from injecting responses for arbitrary companies.
-  const access = await checkCompanyAccess(cnpj);
+  const cleanedCnpj = cleanCNPJ(cnpj);
+  const requestedArea = String(area).trim();
+  if (!requestedArea) return res.status(400).json({ error: 'A área é obrigatória.' });
+
+  const access = await checkCompanyAccess(cleanedCnpj);
   if (!access.valid) {
     return res.status(403).json({ error: access.error || 'CNPJ não autorizado para envio.' });
   }
-
+  const allowedArea = normalizeAreas(access.areas).find((candidate) => candidate.toLowerCase() === requestedArea.toLowerCase());
+  if (!allowedArea) {
+    return res.status(403).json({ error: 'A área selecionada não está habilitada para este CNPJ.' });
+  }
+  const canonicalArea = allowedArea;
   const supabase = getSupabase();
   let result: any = null;
-
   let currentQuestions = [...fallbackQuestions];
+
   if (supabase) {
     try {
       const { data: dbQ } = await supabase.from('questions').select('*');
       if (dbQ && dbQ.length > 0) currentQuestions = dbQ;
-    } catch (e) {
-      console.error('Error fetching questions for submission calculation:', e);
+    } catch (err) {
+      console.error('Error fetching questions for submission calculation:', err);
     }
   }
 
   if (supabase) {
     try {
       const { data: rpcData, error: rpcError } = await supabase.rpc('calculate_assessment_score', { answers });
-
       if (!rpcError && rpcData) {
         result = rpcData;
-        console.log('Successfully computed score inside Supabase via SQL RPC function.');
       } else {
         if (rpcError && rpcError.code === '42883') {
           console.warn('Supabase RPC calculate_assessment_score function does not exist yet. Using backend local calculation.');
@@ -84,7 +94,8 @@ router.post('/assessment/submit', async (req, res) => {
   }
 
   const submission: Submission = {
-    cnpj,
+    cnpj: cleanedCnpj,
+    area: canonicalArea,
     company_name,
     respondent_name,
     respondent_email,
@@ -94,40 +105,54 @@ router.post('/assessment/submit', async (req, res) => {
     total_score: result.total_score,
     classification: result.classification,
     section_scores: result.section_scores,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   };
 
   if (supabase) {
     try {
-      const { data, error } = await supabase.from('responses').insert([submission]).select();
+      const { data, error } = await supabase
+        .from('responses')
+        .upsert([submission], { onConflict: 'cnpj,area' })
+        .select()
+        .single();
       if (error) throw error;
 
-      sendSubmissionNotification(data[0] || submission, result).catch(err =>
-        console.error('Error in background email notification:', err)
+      sendSubmissionNotification(data || submission, result).catch((err) =>
+        console.error('Error in background email notification:', err),
       );
 
-      const downloadToken = signDownloadToken(cleanCNPJ(submission.cnpj), (data[0] as any)?.id);
-      return res.json({ success: true, submission: data[0], result, downloadToken });
+      // Deliberately do not return score, answers, PDF token, or submission
+      // data to the respondent. Reports are admin-only.
+      return res.json({
+        success: true,
+        replaced: access.submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === requestedArea.toLowerCase()),
+        message: 'Resposta registrada com sucesso. O relatório ficará disponível apenas para o administrador.',
+      });
     } catch (err: any) {
-      console.error('Error saving submission in Supabase, falling back to local memory storage:', err);
-      fallbackResponses.push(submission);
-
-      sendSubmissionNotification(submission, result).catch(errMail =>
-        console.error('Error in background email notification:', errMail)
-      );
-
-      const downloadToken = signDownloadToken(cleanCNPJ(submission.cnpj), submission.id);
-      return res.json({ success: true, submission, result, localFallback: true, downloadToken });
+      console.error('Error upserting submission in Supabase, falling back to local memory storage:', err);
     }
   }
 
-  fallbackResponses.push(submission);
-  sendSubmissionNotification(submission, result).catch(err =>
-    console.error('Error in background email notification:', err)
+  const existingIndex = fallbackResponses.findIndex(
+    (response) => cleanCNPJ(response.cnpj) === cleanedCnpj && (response.area || 'Geral').toLowerCase() === requestedArea.toLowerCase(),
+  );
+  const replaced = existingIndex !== -1;
+  const fallbackSubmission: Submission = {
+    ...submission,
+    id: `${cleanedCnpj}-${canonicalArea.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+  };
+  if (replaced) fallbackResponses[existingIndex] = fallbackSubmission;
+  else fallbackResponses.push(fallbackSubmission);
+
+  sendSubmissionNotification(fallbackSubmission, result).catch((err) =>
+    console.error('Error in background email notification:', err),
   );
 
-  const downloadToken = signDownloadToken(cleanCNPJ(submission.cnpj), submission.id);
-  return res.json({ success: true, submission, result, downloadToken });
+  return res.json({
+    success: true,
+    replaced,
+    message: 'Resposta registrada com sucesso. O relatório ficará disponível apenas para o administrador.',
+  });
 });
 
 export default router;

@@ -1,21 +1,16 @@
 import { getSupabase } from "./supabase";
-import { fallbackCompanies } from "../state";
+import { fallbackCompanies, fallbackResponses } from "../state";
 import { cleanCNPJ } from "./cnpj";
 import type { Company } from "../../src/types";
 
 export interface CompanyCheckResult {
   valid: boolean;
   company?: Company;
+  areas: string[];
+  submittedAreas: string[];
   error?: string;
 }
 
-/**
- * Verifies that a CNPJ corresponds to an enabled company whose response
- * window (enabled_from..enabled_until) covers `now`. Single source of truth
- * shared by /cnpj/validate and /assessment/submit so the server enforces the
- * same gate the client UI does — a respondent cannot submit for an arbitrary
- * or out-of-window CNPJ by calling the API directly.
- */
 export async function checkCompanyAccess(cnpj: string): Promise<CompanyCheckResult> {
   const cleanedTarget = cleanCNPJ(cnpj);
   const now = new Date();
@@ -36,7 +31,11 @@ export async function checkCompanyAccess(cnpj: string): Promise<CompanyCheckResu
           throw error;
         }
       } else if (data) {
-        return evaluate(data[0] as Company, now);
+        const company = data[0] as Company | undefined;
+        const access = evaluate(company, now);
+        if (!access.valid || !company) return access;
+        const submittedAreas = await getSubmittedAreas(supabase, cleanedTarget);
+        return { ...access, areas: normalizeAreas(company.areas), submittedAreas };
       }
     } catch (err) {
       console.error("Error checking company access in Supabase:", err);
@@ -44,15 +43,43 @@ export async function checkCompanyAccess(cnpj: string): Promise<CompanyCheckResu
   }
 
   const company = fallbackCompanies.find((c) => cleanCNPJ(c.cnpj) === cleanedTarget);
-  return evaluate(company, now);
+  const access = evaluate(company, now);
+  if (!access.valid || !company) return access;
+  const submittedAreas = fallbackResponsesForCompany(cleanedTarget);
+  return { ...access, areas: normalizeAreas(company.areas), submittedAreas };
+}
+
+export function normalizeAreas(areas: unknown): string[] {
+  if (!Array.isArray(areas)) return ["Geral"];
+  const normalized = areas
+    .filter((area): area is string => typeof area === "string")
+    .map((area) => area.trim())
+    .filter(Boolean);
+  return [...new Set(normalized)].length ? [...new Set(normalized)] : ["Geral"];
+}
+
+async function getSubmittedAreas(supabase: any, cnpj: string): Promise<string[]> {
+  const { data, error } = await supabase.from("responses").select("area").eq("cnpj", cnpj);
+  if (error || !data) return [];
+  return [...new Set((data as Array<{ area?: string }>).map((row) => row.area || "Geral"))];
+}
+
+function fallbackResponsesForCompany(cnpj: string): string[] {
+  return [
+    ...new Set(
+      fallbackResponses
+        .filter((response) => cleanCNPJ(response.cnpj) === cnpj)
+        .map((response) => response.area || "Geral"),
+    ),
+  ];
 }
 
 function evaluate(company: Company | undefined, now: Date): CompanyCheckResult {
   if (!company) {
-    return { valid: false, error: "CNPJ não cadastrado ou não habilitado." };
+    return { valid: false, areas: [], submittedAreas: [], error: "CNPJ não cadastrado ou não habilitado." };
   }
   if (!company.enabled) {
-    return { valid: false, error: "Este CNPJ está desabilitado pelo administrador." };
+    return { valid: false, areas: [], submittedAreas: [], error: "Este CNPJ está desabilitado pelo administrador." };
   }
 
   const fromDate = new Date(company.enabled_from);
@@ -63,9 +90,11 @@ function evaluate(company: Company | undefined, now: Date): CompanyCheckResult {
   if (now < fromDate || now > untilDate) {
     return {
       valid: false,
+      areas: [],
+      submittedAreas: [],
       error: `Fora do período de resposta cadastrado (De ${new Date(company.enabled_from).toLocaleDateString("pt-BR")} até ${new Date(company.enabled_until).toLocaleDateString("pt-BR")}).`,
     };
   }
 
-  return { valid: true, company };
+  return { valid: true, company, areas: normalizeAreas(company.areas), submittedAreas: [] };
 }

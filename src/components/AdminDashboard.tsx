@@ -28,6 +28,7 @@ CREATE TABLE companies (
   enabled BOOLEAN DEFAULT true,
   enabled_from DATE NOT NULL,
   enabled_until DATE NOT NULL,
+  areas JSONB NOT NULL DEFAULT '["Geral"]'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -44,6 +45,7 @@ CREATE TABLE questions (
 CREATE TABLE responses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT NOT NULL,
+  area TEXT NOT NULL DEFAULT 'Geral',
   company_name TEXT NOT NULL,
   respondent_name TEXT NOT NULL,
   respondent_email TEXT NOT NULL,
@@ -53,7 +55,8 @@ CREATE TABLE responses (
   total_score NUMERIC NOT NULL,
   classification TEXT NOT NULL,
   section_scores JSONB NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  CONSTRAINT responses_cnpj_area_unique UNIQUE (cnpj, area)
 );
 
 -- CREATE THE CALCULATION ENGINE FUNCTION (SQL-RPC)
@@ -240,6 +243,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
   const [enabledInput, setEnabledInput] = useState(true);
   const [fromInput, setFromInput] = useState('');
   const [untilInput, setUntilInput] = useState('');
+  const [areasInput, setAreasInput] = useState('');
 
   // Questions state
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -425,7 +429,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
 
   const handleDownloadPdf = async (sub: any) => {
     try {
-      const r = await fetch(`/api/generate-pdf?id=${sub.id || ''}&cnpj=${encodeURIComponent(sub.cnpj || '')}`, {
+      const r = await fetch(`/api/generate-pdf?cnpj=${encodeURIComponent(sub.cnpj || '')}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!r.ok) {
@@ -533,6 +537,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       setEnabledInput(co.enabled);
       setFromInput(co.enabled_from);
       setUntilInput(co.enabled_until);
+      setAreasInput((co.areas || ['Geral']).join(', '));
     } else {
       setEditingCompany(null);
       setCnpjInput('');
@@ -545,6 +550,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       nextYear.setFullYear(now.getFullYear() + 1);
       setFromInput(now.toISOString().split('T')[0]);
       setUntilInput(nextYear.toISOString().split('T')[0]);
+      setAreasInput('Geral');
     }
     setIsCompanyModalOpen(true);
   };
@@ -556,12 +562,19 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       return;
     }
 
+    const areas = [...new Set(areasInput.split(',').map((area) => area.trim()).filter(Boolean))];
+    if (areas.length === 0) {
+      triggerAlert('error', 'Informe pelo menos uma área habilitada.');
+      return;
+    }
+
     const payload = {
       cnpj: cnpjInput,
       name: nameInput,
       enabled: enabledInput,
       enabled_from: fromInput,
-      enabled_until: untilInput
+      enabled_until: untilInput,
+      areas,
     };
 
     try {
@@ -740,9 +753,52 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     }
   };
 
+  // Delete one current response (one CNPJ + area)
+  const handleDeleteResponse = async (sub: Submission) => {
+    const area = sub.area || 'Geral';
+    if (!confirm(`Deseja excluir a resposta da área "${area}" para o CNPJ ${formatCNPJ(sub.cnpj)}?`)) return;
+
+    try {
+      const r = await fetch(`/api/admin/responses/${sub.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) {
+        triggerAlert('success', 'Resposta da área excluída com sucesso.');
+        fetchSubmissions();
+      } else {
+        triggerAlert('error', data.error || 'Erro ao excluir resposta.');
+      }
+    } catch (e) {
+      triggerAlert('error', 'Erro de conexão ao excluir resposta.');
+    }
+  };
+
   // Export excel
-  const handleExportExcel = () => {
-    window.open(`/api/admin/export-excel?token=${token}`, '_blank');
+  const handleExportExcel = async () => {
+    try {
+      const r = await fetch('/api/admin/export-excel', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        triggerAlert('error', data.error || 'Erro ao exportar respostas.');
+        return;
+      }
+
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'relatorio_riscos_psicossociais.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      triggerAlert('error', 'Erro de conexão ao exportar respostas.');
+    }
   };
 
   // Copy SQL script to clipboard
@@ -771,11 +827,28 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     q.section_title.toLowerCase().includes(questionSearch.toLowerCase())
   );
 
-  const filteredSubmissions = submissions.filter(s => 
-    s.company_name.toLowerCase().includes(responseSearch.toLowerCase()) || 
-    s.cnpj.toLowerCase().includes(responseSearch.toLowerCase()) || 
+  const filteredSubmissions = submissions.filter(s =>
+    s.company_name.toLowerCase().includes(responseSearch.toLowerCase()) ||
+    s.cnpj.toLowerCase().includes(responseSearch.toLowerCase()) ||
+    (s.area || 'Geral').toLowerCase().includes(responseSearch.toLowerCase()) ||
     s.respondent_name.toLowerCase().includes(responseSearch.toLowerCase())
   );
+
+  const normalizeCnpj = (value: string) => value.replace(/\D/g, '');
+
+  const companyCnpjs: string[] = Array.from(new Set<string>(submissions.map((submission) => normalizeCnpj(String(submission.cnpj)))));
+  const companySummaries: Array<{
+    cnpj: string;
+    company_name: string;
+    areas: string[];
+    average: number;
+    classification: string;
+  }> = companyCnpjs.map((cnpj) => {
+    const current = submissions.filter((submission) => normalizeCnpj(String(submission.cnpj)) === cnpj);
+    const average = current.reduce((sum, submission) => sum + Number(submission.total_score || 0), 0) / current.length;
+    const classification = average > 80 ? 'Crítico' : average > 60 ? 'Alto' : average > 40 ? 'Médio' : average > 20 ? 'Moderado' : 'Baixo';
+    return { cnpj, company_name: String(current[0].company_name), areas: current.map((submission) => submission.area || 'Geral'), average, classification };
+  });
 
   return (
     <div className="min-h-screen bg-slate-50 flex" id="admin-dashboard-container">
@@ -944,6 +1017,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-semibold">
                       <th className="py-3 px-4">Empresa</th>
                       <th className="py-3 px-4">CNPJ (Chave de Acesso)</th>
+                      <th className="py-3 px-4">Áreas autorizadas</th>
                       <th className="py-3 px-4">Status</th>
                       <th className="py-3 px-4">Período Permitido</th>
                       <th className="py-3 px-4 text-right">Ações</th>
@@ -952,7 +1026,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                   <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
                     {filteredCompanies.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="py-10 text-center text-slate-400">
+                        <td colSpan={6} className="py-10 text-center text-slate-400">
                           Nenhuma empresa habilitada cadastrada no momento.
                         </td>
                       </tr>
@@ -963,6 +1037,15 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                           <tr key={co.id || co.cnpj} className="hover:bg-slate-50">
                             <td className="py-3.5 px-4 font-bold text-slate-800">{co.name}</td>
                             <td className="py-3.5 px-4 font-mono text-slate-600">{formatCNPJ(co.cnpj)}</td>
+                            <td className="py-3.5 px-4 text-3xs text-slate-500 max-w-xs">
+                              <div className="flex flex-wrap gap-1">
+                                {(co.areas || ['Geral']).map((area) => (
+                                  <span key={area} className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100">
+                                    {area}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
                             <td className="py-3.5 px-4">
                               <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-semibold text-3xs ${co.enabled && !isExpired ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
                                 <span className={`w-1.5 h-1.5 rounded-full ${co.enabled && !isExpired ? 'bg-emerald-500' : 'bg-red-500'}`} />
@@ -1133,6 +1216,38 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                 </div>
               </div>
 
+              {/* Consolidated company averages */}
+              {companySummaries.length > 0 && (
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xs p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">Consolidado por empresa</h3>
+                      <p className="text-3xs text-slate-400 mt-1">Média das respostas vigentes por área. Cada área conta uma vez.</p>
+                    </div>
+                    <span className="text-3xs font-mono text-slate-400">{companySummaries.length} empresa(s)</span>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    {companySummaries.map((summary) => (
+                      <div key={summary.cnpj} className="border border-slate-200 rounded-lg p-4 flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-800 truncate">{summary.company_name}</p>
+                          <p className="text-3xs font-mono text-slate-400">{formatCNPJ(summary.cnpj)}</p>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {summary.areas.map((area) => (
+                              <span key={area} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-3xs">{area}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xl font-black text-slate-800">{summary.average.toFixed(1)}%</p>
+                          <p className="text-3xs font-bold text-slate-500">{summary.classification}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Table responses list */}
               <div className="space-y-4">
                 <div className="relative w-80 bg-white border border-slate-200 rounded-lg p-1 shadow-2xs">
@@ -1151,17 +1266,18 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-semibold">
                         <th className="py-3 px-4">Empresa / CNPJ</th>
+                        <th className="py-3 px-4">Área</th>
                         <th className="py-3 px-4">Respondente</th>
                         <th className="py-3 px-4">Horário Envio</th>
                         <th className="py-3 px-4">Score (%)</th>
                         <th className="py-3 px-4">Grau de Risco</th>
-                        <th className="py-3 px-4 text-right">Relatório PDF</th>
+                        <th className="py-3 px-4 text-right">Ações</th>
                       </tr>
                     </thead>
                     <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
                       {filteredSubmissions.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-10 text-center text-slate-400">
+                          <td colSpan={7} className="py-10 text-center text-slate-400">
                             Nenhuma resposta enviada encontrada.
                           </td>
                         </tr>
@@ -1179,6 +1295,11 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                                 <div className="font-bold text-slate-800">{sub.company_name}</div>
                                 <div className="text-3xs text-slate-400 font-mono mt-0.5">{formatCNPJ(sub.cnpj)}</div>
                               </td>
+                          <td className="py-3 px-4">
+                                <span className="inline-flex px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-100 text-3xs font-semibold">
+                                  {sub.area || 'Geral'}
+                                </span>
+                              </td>
                               <td className="py-3 px-4">
                                 <div className="font-semibold">{sub.respondent_name}</div>
                                 <div className="text-3xs text-slate-400 mt-0.5">{sub.respondent_email}</div>
@@ -1194,12 +1315,19 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                                   {sub.classification || 'Indefinido'}
                                 </span>
                               </td>
-                              <td className="py-3 px-4 text-right">
+                            <td className="py-3 px-4 text-right space-x-1">
                                 <button
                                   onClick={() => handleDownloadPdf(sub)}
                                   className="inline-flex items-center gap-1 py-1.5 px-3 bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 text-3xs font-bold rounded border border-slate-200 transition-all cursor-pointer"
                                 >
-                                  <FileDown className="w-3 h-3" /> Baixar PDF
+                                  <FileDown className="w-3 h-3" /> PDF
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteResponse(sub)}
+                                  className="inline-flex items-center gap-1 py-1.5 px-2 bg-red-50 hover:bg-red-600 hover:text-white text-red-700 text-3xs font-bold rounded border border-red-200 transition-all cursor-pointer"
+                                  title="Excluir resposta desta área"
+                                >
+                                  <Trash2 className="w-3 h-3" />
                                 </button>
                               </td>
                             </tr>
@@ -1899,6 +2027,19 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                   disabled={editingCompany !== null}
                   className="w-full px-3.5 py-2 bg-slate-50 disabled:bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800 font-mono"
                 />
+              </div>
+
+              <div>
+                <label className="block text-2xs font-bold text-slate-600 mb-1 tracking-wide uppercase">Áreas autorizadas</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Financeiro, Contabilidade, Operações"
+                  value={areasInput}
+                  onChange={(e) => setAreasInput(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800"
+                />
+                <p className="mt-1 text-3xs text-slate-400">Separe as áreas por vírgula. Ex.: Financeiro, Contabilidade, Operações.</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

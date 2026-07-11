@@ -23,6 +23,7 @@ CREATE TABLE companies (
   enabled BOOLEAN DEFAULT true,
   enabled_from DATE NOT NULL,
   enabled_until DATE NOT NULL,
+  areas JSONB NOT NULL DEFAULT '["Geral"]'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -43,12 +44,13 @@ CREATE TABLE questions (
 
 -- ------------------------------------------------------------
 -- Table: responses
--- A single submitted assessment. answers is the raw map of
--- { question_id: value }. total_score is a percentage 0-100.
+-- One current response per company/area. A later submission for the
+-- same CNPJ and area replaces the previous response.
 -- ------------------------------------------------------------
 CREATE TABLE responses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT NOT NULL,
+  area TEXT NOT NULL DEFAULT 'Geral',
   company_name TEXT NOT NULL,
   respondent_name TEXT NOT NULL,
   respondent_email TEXT NOT NULL,
@@ -58,13 +60,15 @@ CREATE TABLE responses (
   total_score NUMERIC NOT NULL,
   classification TEXT NOT NULL,
   section_scores JSONB NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+  CONSTRAINT responses_cnpj_area_unique UNIQUE (cnpj, area)
 );
 
 -- Helpful indexes for the common query patterns used by the API.
 CREATE INDEX idx_companies_cnpj ON companies (cnpj);
 CREATE INDEX idx_responses_cnpj ON responses (cnpj);
 CREATE INDEX idx_responses_created_at ON responses (created_at DESC);
+CREATE INDEX idx_responses_cnpj_area ON responses (cnpj, area);
 
 -- ============================================================
 -- CALCULATION ENGINE FUNCTION (SQL-RPC)
@@ -135,11 +139,11 @@ BEGIN
   ELSIF final_percentage <= 40 THEN
     classification := 'Moderado';
   ELSIF final_percentage <= 60 THEN
-    classification := 'Medio';
+    classification := 'Médio';
   ELSIF final_percentage <= 80 THEN
     classification := 'Alto';
   ELSE
-    classification := 'Critico';
+    classification := 'Crítico';
   END IF;
   FOR sec_id IN SELECT DISTINCT section_id::TEXT FROM questions ORDER BY section_id::INT LOOP
     IF jsonb_exists(section_sums, sec_id) THEN

@@ -9,6 +9,7 @@ export const fallbackCompanies: Company[] = [
     enabled: true,
     enabled_from: "2026-01-01",
     enabled_until: "2027-12-31",
+    areas: ["Geral"],
   },
 ];
 
