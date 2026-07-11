@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Building2, HelpCircle, FileBarChart2, Database, LogOut, Plus, 
-  Trash2, Edit, Save, X, Calendar, Check, AlertTriangle, FileSpreadsheet, 
+import {
+  Building2, HelpCircle, FileBarChart2, Database, LogOut, Plus,
+  Trash2, Edit, Save, X, Calendar, Check, AlertTriangle, FileSpreadsheet,
   FileDown, CheckCircle, RefreshCcw, Search, Eye, Filter, Info, Mail, User, Lock, Activity, LifeBuoy
 } from 'lucide-react';
 import { Company, Question, Submission } from '../types';
@@ -149,6 +149,23 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;`;
 
+const COMMON_COMPANY_AREAS = [
+  'Geral',
+  'Administração',
+  'Comercial / Vendas',
+  'Compras / Suprimentos',
+  'Contabilidade',
+  'Financeiro',
+  'Jurídico',
+  'Logística / Distribuição',
+  'Marketing / Comunicação',
+  'Operações / Produção',
+  'Recursos Humanos / Pessoas',
+  'Saúde e Segurança do Trabalho',
+  'Tecnologia da Informação',
+  'Outros',
+];
+
 export default function AdminDashboard({ token, onLogout }: AdminDashboardProps) {
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -244,6 +261,8 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
   const [fromInput, setFromInput] = useState('');
   const [untilInput, setUntilInput] = useState('');
   const [areasInput, setAreasInput] = useState('');
+  const [selectedAdminAreas, setSelectedAdminAreas] = useState<string[]>([]);
+  const [otherAreasInput, setOtherAreasInput] = useState('');
 
   // Questions state
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -538,6 +557,11 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       setFromInput(co.enabled_from);
       setUntilInput(co.enabled_until);
       setAreasInput((co.areas || ['Geral']).join(', '));
+      const existingAreas = co.areas || ['Geral'];
+      const knownAreas = existingAreas.filter((area) => COMMON_COMPANY_AREAS.includes(area));
+      const customAreas = existingAreas.filter((area) => !COMMON_COMPANY_AREAS.includes(area));
+      setSelectedAdminAreas(customAreas.length ? [...knownAreas, 'Outros'] : knownAreas);
+      setOtherAreasInput(customAreas.join(', '));
     } else {
       setEditingCompany(null);
       setCnpjInput('');
@@ -550,7 +574,9 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       nextYear.setFullYear(now.getFullYear() + 1);
       setFromInput(now.toISOString().split('T')[0]);
       setUntilInput(nextYear.toISOString().split('T')[0]);
-      setAreasInput('Geral');
+      setSelectedAdminAreas([]);
+      setOtherAreasInput('');
+      setAreasInput('');
     }
     setIsCompanyModalOpen(true);
   };
@@ -562,9 +588,15 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       return;
     }
 
-    const areas = [...new Set(areasInput.split(',').map((area) => area.trim()).filter(Boolean))];
+    const customAreas = selectedAdminAreas.includes('Outros')
+      ? otherAreasInput.split(',').map((area) => area.trim()).filter(Boolean)
+      : [];
+    const areas = [...new Set([
+      ...selectedAdminAreas.filter((area) => area !== 'Outros'),
+      ...customAreas,
+    ])];
     if (areas.length === 0) {
-      triggerAlert('error', 'Informe pelo menos uma área habilitada.');
+      triggerAlert('error', 'Selecione pelo menos uma área habilitada.');
       return;
     }
 
@@ -2030,16 +2062,37 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
               </div>
 
               <div>
-                <label className="block text-2xs font-bold text-slate-600 mb-1 tracking-wide uppercase">Áreas autorizadas</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Financeiro, Contabilidade, Operações"
-                  value={areasInput}
-                  onChange={(e) => setAreasInput(e.target.value)}
-                  className="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800"
-                />
-                <p className="mt-1 text-3xs text-slate-400">Separe as áreas por vírgula. Ex.: Financeiro, Contabilidade, Operações.</p>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-2xs font-bold text-slate-600 tracking-wide uppercase">Áreas que responderão</label>
+                  <span className="text-3xs text-slate-400">Selecione uma ou mais</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  {COMMON_COMPANY_AREAS.map((area) => {
+                    const checked = selectedAdminAreas.includes(area);
+                    return (
+                      <label key={area} className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-xs cursor-pointer transition-colors ${checked ? 'border-blue-300 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200'}`}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setSelectedAdminAreas((current) => checked ? current.filter((item) => item !== area) : [...current, area])}
+                          className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span>{area}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedAdminAreas.includes('Outros') && (
+                  <input
+                    type="text"
+                    required
+                    placeholder="Digite outras áreas, separadas por vírgula"
+                    value={otherAreasInput}
+                    onChange={(e) => setOtherAreasInput(e.target.value)}
+                    className="mt-2 w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800"
+                  />
+                )}
+                <p className="mt-1 text-3xs text-slate-400">A opção “Outros” permite cadastrar uma ou mais áreas personalizadas.</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

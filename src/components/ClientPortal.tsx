@@ -152,6 +152,18 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
       return;
     }
 
+    // After the CNPJ is validated, the same button confirms the selected area
+    // and opens the questionnaire.
+    if (validatedCnpj) {
+      if (!selectedArea) {
+        setAuthError('Selecione a área que está respondendo o formulário.');
+        return;
+      }
+      setStep('checklist');
+      setAuthError(null);
+      return;
+    }
+
     setIsValidating(true);
     setAuthError(null);
 
@@ -171,10 +183,7 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
         setSubmittedAreas(data.submittedAreas || []);
         setSelectedArea('');
         setStartTime(new Date().toISOString());
-        setStep('checklist');
-
-        // Check for saved draft for this CNPJ + respondentEmail + area once
-        // an area is selected below.
+        setAuthError(null);
       } else {
         setAuthError(data.error || 'Acesso negado. Verifique o CNPJ ou consulte a administração.');
       }
@@ -351,7 +360,7 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                   CHAVE DE ACESSO EXIGIDA
                 </span>
                 <h2 className="text-xl font-bold text-slate-900 mt-3 font-sans">Validação do Colaborador</h2>
-                <p className="text-slate-500 text-xs mt-1">Insira o CNPJ habilitado da sua empresa e suas informações de contato para liberar o checklist.</p>
+                <p className="text-slate-500 text-xs mt-1">{validatedCnpj ? 'Confira os dados e selecione a área que irá responder ao formulário.' : 'Insira o CNPJ habilitado da sua empresa e suas informações de contato para liberar o checklist.'}</p>
               </div>
 
               {authError && (
@@ -413,6 +422,39 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                   </div>
                 </div>
 
+                {validatedCnpj && (
+                  <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4" id="client-area-selection">
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div>
+                        <label htmlFor="input-client-area-auth" className="block text-2xs font-bold text-blue-900 uppercase tracking-wide">
+                          Área que está respondendo
+                        </label>
+                        <p className="text-3xs text-blue-700 mt-1">Empresa validada: {companyName}</p>
+                      </div>
+                      <CheckCircle className="w-5 h-5 text-blue-600 shrink-0" />
+                    </div>
+                    <select
+                      required
+                      value={selectedArea}
+                      onChange={(e) => handleSelectArea(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-white border border-blue-300 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-blue-600"
+                      id="input-client-area-auth"
+                    >
+                      <option value="">Selecione uma área</option>
+                      {areas.map((area) => (
+                        <option key={area} value={area}>
+                          {area}{submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase()) ? ' (já preenchida)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {submittedAreas.length > 0 && (
+                      <p className="mt-2 text-3xs text-amber-700">
+                        Uma área já preenchida pedirá confirmação antes de substituir a resposta anterior.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* LGPD Consent Checkbox */}
                 <div className="pt-2 flex items-start gap-2.5" id="lgpd-consent-container">
                   <input
@@ -447,7 +489,7 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                     </>
                   ) : (
                     <>
-                      Validar e Acessar Formulário <ArrowRight className="w-4 h-4" />
+                      {validatedCnpj ? 'Confirmar área e acessar formulário' : 'Validar CNPJ'} <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </button>
