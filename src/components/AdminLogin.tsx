@@ -122,13 +122,6 @@ export default function AdminLogin({ onBack, onLoginSuccess }: AdminLoginProps) 
             )}
           </button>
         </form>
-
-        {/* Credentials Tip (Helpful in staging) */}
-        <div className="mt-8 pt-6 border-t border-slate-100 text-center">
-          <p className="text-slate-400 text-xs font-sans">
-            Dica para teste: Utilize <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded font-mono">admin@controlseg.com.br</code> e <code className="text-slate-700 bg-slate-100 px-1 py-0.5 rounded font-mono">admin_secure_password</code>
-          </p>
-        </div>
       </motion.div>
     </div>
   );
