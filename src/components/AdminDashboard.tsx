@@ -5,12 +5,107 @@ import {
   Trash2, Edit, Save, X, Calendar, Check, AlertTriangle, FileSpreadsheet,
   FileDown, CheckCircle, RefreshCcw, Search, Eye, Filter, Info, Mail, User, Lock, Activity, LifeBuoy
 } from 'lucide-react';
-import { Company, Question, Submission, ReportSummary } from '../types';
+import { Company, Question, Submission } from '../types';
 import { CompanyLogo } from './CompanyLogo';
 
 interface AdminDashboardProps {
   token: string;
   onLogout: () => void;
+}
+
+interface ResponseAreaGroup {
+  area: string;
+  responses: Submission[];
+  displayResponses: Submission[];
+  response_count: number;
+  total_score: number;
+  classification: string;
+  respondent_count: number;
+}
+
+interface ResponseCompanyGroup {
+  cnpj: string;
+  company_name: string;
+  responses: Submission[];
+  areas: ResponseAreaGroup[];
+  total_score: number;
+  classification: string;
+  people_count: number;
+}
+
+function classifyRiskScore(score: number): string {
+  if (score <= 20) return 'Baixo';
+  if (score <= 40) return 'Moderado';
+  if (score <= 60) return 'Médio';
+  if (score <= 80) return 'Alto';
+  return 'Crítico';
+}
+
+function respondentKey(response: Submission): string {
+  const email = response.respondent_email.trim().toLowerCase();
+  return email || `name:${response.respondent_name.trim().toLowerCase()}`;
+}
+
+function averageResponseScore(responses: Submission[]): number {
+  if (!responses.length) return 0;
+  return Number(
+    (responses.reduce((sum, response) => sum + Number(response.total_score || 0), 0) / responses.length).toFixed(2),
+  );
+}
+
+function buildResponseReportGroups(responses: Submission[]): ResponseCompanyGroup[] {
+  const companyMap = new Map<string, { cnpj: string; company_name: string; responses: Submission[] }>();
+
+  responses.forEach((response) => {
+    const cnpj = response.cnpj || '';
+    const key = cnpj.replace(/\D/g, '') || cnpj.toLowerCase();
+    const company = companyMap.get(key);
+    if (company) {
+      company.responses.push(response);
+    } else {
+      companyMap.set(key, {
+        cnpj,
+        company_name: response.company_name,
+        responses: [response],
+      });
+    }
+  });
+
+  return [...companyMap.values()].map((company) => {
+    const areaMap = new Map<string, Submission[]>();
+    company.responses.forEach((response) => {
+      const area = (response.area || 'Geral').trim() || 'Geral';
+      const areaKey = area.toLowerCase();
+      const areaResponses = areaMap.get(areaKey);
+      if (areaResponses) areaResponses.push(response);
+      else areaMap.set(areaKey, [response]);
+    });
+
+    const areas = [...areaMap.values()].map((areaResponses) => {
+      const area = (areaResponses[0].area || 'Geral').trim() || 'Geral';
+      const total_score = averageResponseScore(areaResponses);
+      return {
+        area,
+        responses: areaResponses,
+        displayResponses: areaResponses,
+        response_count: areaResponses.length,
+        total_score,
+        classification: classifyRiskScore(total_score),
+        respondent_count: new Set(areaResponses.map(respondentKey)).size,
+      };
+    });
+    const total_score = averageResponseScore(company.responses);
+
+    return {
+      cnpj: company.cnpj,
+      company_name: company.company_name,
+      responses: company.responses,
+      areas,
+      total_score,
+      classification: classifyRiskScore(total_score),
+      people_count: new Set(company.responses.map(respondentKey)).size,
+    };
+  });
 }
 
 const SQL_SCHEMA_SCRIPT = `-- SAFE SUPABASE BOOTSTRAP (NON-DESTRUCTIVE)
@@ -280,7 +375,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
 
   // Responses state
   const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [reportSummary, setReportSummary] = useState<ReportSummary>({ response_count: 0, companies: [] });
   const [responseSearch, setResponseSearch] = useState('');
 
   // Global error & success notifications
@@ -310,7 +404,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     fetchCompanies();
     fetchQuestions();
     fetchSubmissions();
-    fetchReportSummary();
     fetchEmailConfig();
     fetchAdminProfile();
   }, []);
@@ -448,9 +541,17 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
   };
 
   const handleDownloadPdf = async (sub: any) => {
+    await downloadPdf(
+      { cnpj: sub.cnpj || '' },
+      `relatorio_empresa_${sub.cnpj || 'sem_cnpj'}.pdf`,
+    );
+  };
+
+  const downloadPdf = async (params: Record<string, string>, filename: string) => {
     try {
-      const r = await fetch(`/api/generate-pdf?cnpj=${encodeURIComponent(sub.cnpj || '')}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const query = new URLSearchParams(params).toString();
+      const r = await fetch(`/api/generate-pdf?${query}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
@@ -461,7 +562,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       const url = URL.createObjectURL(blob);
       const a = window.document.createElement('a');
       a.href = url;
-      a.download = `relatorio_consolidado_${sub.cnpj || 'sem_cnpj'}.pdf`;
+      a.download = filename;
       window.document.body.appendChild(a);
       a.click();
       a.remove();
@@ -469,6 +570,51 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     } catch (e) {
       console.error(e);
       triggerAlert('error', 'Erro de comunicação ao baixar PDF.');
+    }
+  };
+
+  const handleDownloadPersonPdf = (sub: Submission) => {
+    const respondentParams: Record<string, string> = {
+      cnpj: sub.cnpj,
+      scope: 'person',
+      respondent_name: sub.respondent_name,
+    };
+    if (sub.respondent_email) respondentParams.respondent_email = sub.respondent_email;
+    void downloadPdf(respondentParams, `relatorio_pessoa_${sub.respondent_name.replace(/[^a-z0-9]+/gi, '_')}.pdf`);
+  };
+
+  const handleDownloadAreaPdf = (cnpj: string, area: string) => {
+    void downloadPdf(
+      { cnpj, scope: 'area', area },
+      `relatorio_area_${area.replace(/[^a-z0-9]+/gi, '_')}.pdf`,
+    );
+  };
+
+  const handleDeleteResponse = async (sub: Submission) => {
+    if (!sub.id) {
+      triggerAlert('error', 'Este preenchimento não possui identificador para exclusão.');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Excluir somente o preenchimento de ${sub.respondent_name} na área ${sub.area || 'Geral'}? A média da área será recalculada.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/admin/responses/${encodeURIComponent(sub.id)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        triggerAlert('error', data.error || 'Erro ao excluir o preenchimento.');
+        return;
+      }
+      triggerAlert('success', 'Preenchimento excluído. Os resultados da área foram recalculados.');
+      await fetchSubmissions();
+    } catch (error) {
+      console.error(error);
+      triggerAlert('error', 'Erro de comunicação ao excluir o preenchimento.');
     }
   };
 
@@ -542,21 +688,9 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       if (r.ok) {
         const data = await r.json();
         setSubmissions(data);
-        fetchReportSummary();
       }
     } catch (e) {
       console.error(e);
-    }
-  };
-
-  const fetchReportSummary = async () => {
-    try {
-      const r = await fetch('/api/admin/report-summary', {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (r.ok) setReportSummary(await r.json());
-    } catch (e) {
-      console.error('Error fetching report summary:', e);
     }
   };
 
@@ -831,15 +965,30 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     q.section_title.toLowerCase().includes(questionSearch.toLowerCase())
   );
 
-  const filteredSubmissions = submissions.filter(s =>
-    s.company_name.toLowerCase().includes(responseSearch.toLowerCase()) ||
-    s.cnpj.toLowerCase().includes(responseSearch.toLowerCase()) ||
-    (s.area || 'Geral').toLowerCase().includes(responseSearch.toLowerCase()) ||
-    s.respondent_name.toLowerCase().includes(responseSearch.toLowerCase())
-  );
+  const allResponseReportGroups = buildResponseReportGroups(submissions);
+  const normalizedResponseSearch = responseSearch.trim().toLowerCase();
+  const responseReportGroups = allResponseReportGroups.flatMap((company) => {
+    if (!normalizedResponseSearch) return [company];
 
-  const normalizeCnpj = (value: string) => value.replace(/\D/g, '');
+    const companyMatches = [company.company_name, company.cnpj]
+      .some((value) => value.toLowerCase().includes(normalizedResponseSearch));
+    const areas = company.areas.flatMap((area) => {
+      const areaMatches = area.area.toLowerCase().includes(normalizedResponseSearch);
+      const displayResponses = companyMatches || areaMatches
+        ? area.responses
+        : area.responses.filter((response) => [
+            response.respondent_name,
+            response.respondent_email,
+            response.area || 'Geral',
+          ].some((value) => value.toLowerCase().includes(normalizedResponseSearch)));
 
+      return displayResponses.length > 0
+        ? [{ ...area, displayResponses }]
+        : [];
+    });
+
+    return areas.length > 0 ? [{ ...company, areas }] : [];
+  });
 
   return (
     <div className="min-h-screen bg-slate-50 flex" id="admin-dashboard-container">
@@ -1167,204 +1316,31 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
 
           {/* TAB 3: RESPONSES */}
           {activeTab === 'responses' && (
-            <div className="space-y-6">
-              {/* Quick Summary Widgets */}
-              <div className="grid grid-cols-1 sm:grid-cols-5 gap-6">
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Preenchimentos Recebidos</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">{reportSummary.response_count || submissions.length}</p>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Pessoas Únicas</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">
-                    {reportSummary.companies.reduce((total, company) => total + company.people_count, 0)}
-                  </p>
-                </div>
-                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Média Geral</p>
-                  <p className="text-xl font-bold text-slate-800 mt-1">
-                    {submissions.length > 0
-                      ? `${(submissions.reduce((acc, curr) => acc + (curr.total_score || 0), 0) / submissions.length).toFixed(1)}%`
-                      : 'N/A'}
-                  </p>
-                </div>
-                
-                {/* Admin Reset and Export Buttons */}
-                  <div className="sm:col-span-2 bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex flex-col justify-center gap-3">
-                    <button
-                      onClick={handleExportExcel}
-                      disabled={submissions.length === 0}
-                      className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
-                    >
-                      <FileSpreadsheet className="w-4 h-4" /> Extrair histórico e relatório (Excel)
-                    </button>
-                    <p className="text-3xs text-slate-400 text-center font-sans">
-                      A exportação lê todas as linhas do histórico. Nenhum preenchimento é apagado ou substituído.
-                    </p>
-                  </div>
-              </div>
-
-              {/* Hierarchical report: person -> area -> company */}
-              {reportSummary.companies.length > 0 && (
-                <div className="space-y-6">
-                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-900">
-                    <strong>Critério do relatório:</strong> todos os preenchimentos são considerados. As médias são calculadas no nível da pessoa, depois agrupadas por área e, por fim, consolidadas por empresa.
-                  </div>
-
-                  {reportSummary.companies.map((company) => (
-                    <div key={company.cnpj} className="bg-white border border-slate-200 rounded-xl shadow-xs p-5 space-y-6">
-                      <div>
-                        <h3 className="text-sm font-bold text-slate-900">{company.company_name}</h3>
-                        <p className="text-3xs font-mono text-slate-400 mt-1">{formatCNPJ(company.cnpj)}</p>
-                        <div className="flex flex-wrap gap-2 mt-3 text-3xs">
-                          <span className="px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-100 font-semibold">
-                            {company.people_count} pessoa(s) única(s)
-                          </span>
-                          <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                            {company.response_count} preenchimento(s)
-                          </span>
-                        </div>
-                      </div>
-
-                      <section>
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-800">1. Resultado por pessoa</h4>
-                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos feitos pela mesma pessoa.</p>
-                          </div>
-                          <span className="text-3xs font-mono text-slate-400">{company.people_count} pessoa(s)</span>
-                        </div>
-                        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                          <table className="w-full text-left border-collapse min-w-[720px]">
-                            <thead>
-                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-3xs font-semibold">
-                                <th className="py-2.5 px-3">Pessoa</th>
-                                <th className="py-2.5 px-3">Áreas</th>
-                                <th className="py-2.5 px-3">Preenchimentos</th>
-                                <th className="py-2.5 px-3">Média (%)</th>
-                                <th className="py-2.5 px-3">Classificação</th>
-                              </tr>
-                            </thead>
-                            <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
-                              {company.people.map((person) => (
-                                <tr key={`${person.respondent_email}-${person.respondent_name}`}>
-                                  <td className="py-2.5 px-3">
-                                    <div className="font-semibold">{person.respondent_name}</div>
-                                    <div className="text-3xs text-slate-400">{person.respondent_email}</div>
-                                  </td>
-                                  <td className="py-2.5 px-3 text-3xs text-slate-500">{person.areas.join(', ')}</td>
-                                  <td className="py-2.5 px-3 font-mono">{person.response_count}</td>
-                                  <td className="py-2.5 px-3 font-bold">{person.total_score}%</td>
-                                  <td className="py-2.5 px-3">{person.classification}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </section>
-
-                      <section>
-                        <div className="flex items-center justify-between mb-3">
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-800">2. Resultado por área</h4>
-                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos realizados na área.</p>
-                          </div>
-                          <span className="text-3xs font-mono text-slate-400">{company.areas.length} área(s)</span>
-                        </div>
-                        <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                          <table className="w-full text-left border-collapse min-w-[720px]">
-                            <thead>
-                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-3xs font-semibold">
-                                <th className="py-2.5 px-3">Área</th>
-                                <th className="py-2.5 px-3">Pessoas</th>
-                                <th className="py-2.5 px-3">Preenchimentos</th>
-                                <th className="py-2.5 px-3">Média (%)</th>
-                                <th className="py-2.5 px-3">Classificação</th>
-                              </tr>
-                            </thead>
-                            <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
-                              {company.areas.map((area) => (
-                                <tr key={area.area}>
-                                  <td className="py-2.5 px-3 font-semibold">{area.area}</td>
-                                  <td className="py-2.5 px-3">{area.respondent_count}</td>
-                                  <td className="py-2.5 px-3 font-mono">{area.response_count}</td>
-                                  <td className="py-2.5 px-3 font-bold">{area.total_score}%</td>
-                                  <td className="py-2.5 px-3">{area.classification}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                        {company.areas.map((area) => (
-                          <div key={`responses-${area.area}`} className="border border-blue-100 rounded-lg overflow-hidden mt-4">
-                            <div className="bg-blue-50 px-3 py-2 text-3xs font-semibold text-blue-800">
-                              Preenchimentos individuais da área {area.area} — nenhuma linha foi consolidada ou substituída
-                            </div>
-                            <div className="overflow-x-auto">
-                              <table className="w-full text-left border-collapse min-w-[980px]">
-                                <thead>
-                                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-3xs font-semibold">
-                                    <th className="py-2 px-3">Nº</th>
-                                    <th className="py-2 px-3">Pessoa</th>
-                                    <th className="py-2 px-3">E-mail</th>
-                                    <th className="py-2 px-3">Início</th>
-                                    <th className="py-2 px-3">Fim</th>
-                                    <th className="py-2 px-3">Pontuação</th>
-                                    <th className="py-2 px-3">Classificação</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="text-3xs text-slate-700 divide-y divide-slate-100">
-                                  {area.responses.map((response, responseIndex) => (
-                                    <tr key={response.id || `${area.area}-${responseIndex}`}>
-                                      <td className="py-2 px-3 font-mono">{responseIndex + 1}</td>
-                                      <td className="py-2 px-3 font-semibold">{response.respondent_name}</td>
-                                      <td className="py-2 px-3 text-slate-500">{response.respondent_email}</td>
-                                      <td className="py-2 px-3 font-mono text-slate-500">{new Date(response.start_time).toLocaleString('pt-BR')}</td>
-                                      <td className="py-2 px-3 font-mono text-slate-500">{new Date(response.end_time).toLocaleString('pt-BR')}</td>
-                                      <td className="py-2 px-3 font-bold">{response.total_score ?? '—'}%</td>
-                                      <td className="py-2 px-3">{response.classification || 'Indefinido'}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        ))}
-                        </section>
-
-                      <section className="border-t border-slate-200 pt-5">
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
-                            <h4 className="text-xs font-bold text-slate-800">3. Resultado por empresa</h4>
-                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos da empresa.</p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-2xl font-black text-slate-800">{company.total_score}%</p>
-                            <p className="text-3xs font-bold text-slate-500">{company.classification}</p>
-                          </div>
-                        </div>
-                        <p className="text-3xs text-slate-500 mt-3">{company.response_count} preenchimento(s) de {company.people_count} pessoa(s) única(s) considerado(s) no consolidado.</p>
-                      </section>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Table responses list */}
-              <div className="space-y-4">
-                <div className="relative w-80 bg-white border border-slate-200 rounded-lg p-1 shadow-2xs">
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="relative w-full sm:w-96">
                   <Search className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400" />
                   <input
                     type="text"
-                    placeholder="Pesquisar por empresa ou respondente..."
+                    placeholder="Pesquisar empresa, área ou respondente..."
                     value={responseSearch}
                     onChange={(e) => setResponseSearch(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2 bg-slate-50 border-0 rounded text-slate-800 text-xs focus:outline-none"
+                    className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-800 shadow-xs"
                   />
                 </div>
+                <button
+                  onClick={handleExportExcel}
+                  disabled={submissions.length === 0}
+                  className="w-full sm:w-auto py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
+                  title="Baixar histórico completo em Excel"
+                >
+                  <FileSpreadsheet className="w-4 h-4" /> Excel
+                </button>
+              </div>
 
-                <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+              <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[980px]">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-semibold">
                         <th className="py-3 px-4">Empresa / CNPJ</th>
@@ -1376,58 +1352,118 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                         <th className="py-3 px-4 text-right">Ações</th>
                       </tr>
                     </thead>
-                    <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
-                      {filteredSubmissions.length === 0 ? (
+                    <tbody className="text-xs text-slate-700">
+                      {responseReportGroups.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-10 text-center text-slate-400">
+                          <td colSpan={7} className="py-12 text-center text-slate-400">
                             Nenhuma resposta enviada encontrada.
                           </td>
                         </tr>
                       ) : (
-                        filteredSubmissions.map((sub, idx) => {
-                          let riskColor = 'bg-emerald-50 text-emerald-800 border-emerald-100';
-                          if (sub.classification === 'Moderado') riskColor = 'bg-yellow-50 text-yellow-800 border-yellow-100';
-                          else if (sub.classification === 'Médio') riskColor = 'bg-amber-50 text-amber-800 border-amber-100';
-                          else if (sub.classification === 'Alto') riskColor = 'bg-orange-50 text-orange-800 border-orange-100';
-                          else if (sub.classification === 'Crítico') riskColor = 'bg-red-50 text-red-800 border-red-100';
-
-                          return (
-                            <tr key={sub.id || idx} className="hover:bg-slate-50">
-                              <td className="py-3 px-4">
-                                <div className="font-bold text-slate-800">{sub.company_name}</div>
-                                <div className="text-3xs text-slate-400 font-mono mt-0.5">{formatCNPJ(sub.cnpj)}</div>
+                        responseReportGroups.map((company) => (
+                          <React.Fragment key={company.cnpj}>
+                            <tr className="bg-slate-800 text-white">
+                              <td colSpan={4} className="py-3 px-4">
+                                <div className="font-bold">{company.company_name}</div>
+                                <div className="text-3xs text-slate-300 font-mono mt-0.5">{formatCNPJ(company.cnpj)}</div>
                               </td>
-                          <td className="py-3 px-4">
-                                <span className="inline-flex px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-100 text-3xs font-semibold">
-                                  {sub.area || 'Geral'}
+                              <td className="py-3 px-4 font-bold">{company.total_score}%</td>
+                              <td className="py-3 px-4">
+                                <span className="inline-flex px-2 py-1 rounded border border-white/20 bg-white/10 text-3xs font-semibold">
+                                  {company.classification}
                                 </span>
                               </td>
-                              <td className="py-3 px-4">
-                                <div className="font-semibold">{sub.respondent_name}</div>
-                                <div className="text-3xs text-slate-400 mt-0.5">{sub.respondent_email}</div>
-                              </td>
-                              <td className="py-3 px-4 text-slate-500 font-mono">
-                                {new Date(sub.end_time).toLocaleString('pt-BR')}
-                              </td>
-                              <td className="py-3 px-4 font-bold text-slate-800">
-                                {sub.total_score !== undefined ? `${sub.total_score}%` : 'Calculando...'}
-                              </td>
-                              <td className="py-3 px-4">
-                                <span className={`px-2 py-1 rounded border font-semibold text-3xs ${riskColor}`}>
-                                  {sub.classification || 'Indefinido'}
-                                </span>
-                              </td>
-                            <td className="py-3 px-4 text-right space-x-1">
+                              <td className="py-3 px-4 text-right">
                                 <button
-                                  onClick={() => handleDownloadPdf(sub)}
-                                  className="inline-flex items-center gap-1 py-1.5 px-3 bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 text-3xs font-bold rounded border border-slate-200 transition-all cursor-pointer"
+                                  onClick={() => handleDownloadPdf(company)}
+                                  className="inline-flex items-center gap-1.5 py-1.5 px-2.5 bg-white/10 hover:bg-white/20 rounded border border-white/20 text-3xs font-bold cursor-pointer"
+                                  title="Baixar relatório consolidado da empresa"
+                                  aria-label={`Baixar relatório consolidado de ${company.company_name}`}
                                 >
-                                  <FileDown className="w-3 h-3" /> PDF
+                                  <FileDown className="w-3.5 h-3.5" /> Empresa
                                 </button>
                               </td>
                             </tr>
-                          );
-                        })
+                            {company.areas.map((area) => (
+                              <React.Fragment key={`${company.cnpj}-${area.area}`}>
+                                <tr className="bg-blue-50 border-y border-blue-100">
+                                  <td colSpan={2} className="py-2.5 px-4">
+                                    <div className="font-bold text-blue-900">{area.area}</div>
+                                    <div className="text-3xs text-blue-700 mt-0.5">
+                                      {area.response_count} preenchimento(s) de {area.respondent_count} pessoa(s)
+                                    </div>
+                                  </td>
+                                  <td colSpan={2} className="py-2.5 px-4 text-blue-800 text-3xs">
+                                    Resultado da área
+                                  </td>
+                                  <td className="py-2.5 px-4 font-black text-blue-900">{area.total_score}%</td>
+                                  <td className="py-2.5 px-4">
+                                    <span className="inline-flex px-2 py-1 rounded border border-blue-200 bg-white text-blue-800 text-3xs font-semibold">
+                                      {area.classification}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right">
+                                    <button
+                                      onClick={() => handleDownloadAreaPdf(company.cnpj, area.area)}
+                                      className="inline-flex items-center gap-1.5 py-1.5 px-2.5 bg-white hover:bg-blue-600 hover:text-white text-blue-800 text-3xs font-bold rounded border border-blue-200 cursor-pointer transition-colors"
+                                      title={`Baixar relatório da área ${area.area}`}
+                                      aria-label={`Baixar relatório da área ${area.area}`}
+                                    >
+                                      <FileDown className="w-3.5 h-3.5" /> Área
+                                    </button>
+                                  </td>
+                                </tr>
+                                {area.displayResponses.map((sub, responseIndex) => {
+                                  let riskColor = 'bg-emerald-50 text-emerald-800 border-emerald-100';
+                                  if (sub.classification === 'Moderado') riskColor = 'bg-yellow-50 text-yellow-800 border-yellow-100';
+                                  else if (sub.classification === 'Médio') riskColor = 'bg-amber-50 text-amber-800 border-amber-100';
+                                  else if (sub.classification === 'Alto') riskColor = 'bg-orange-50 text-orange-800 border-orange-100';
+                                  else if (sub.classification === 'Crítico') riskColor = 'bg-red-50 text-red-800 border-red-100';
+
+                                  return (
+                                    <tr key={sub.id || `${company.cnpj}-${area.area}-${responseIndex}`} className="hover:bg-slate-50 border-b border-slate-100">
+                                      <td className="py-3 px-4 text-slate-400 text-3xs">{formatCNPJ(company.cnpj)}</td>
+                                      <td className="py-3 px-4 text-3xs text-slate-600">{area.area}</td>
+                                      <td className="py-3 px-4">
+                                        <div className="font-semibold">{sub.respondent_name}</div>
+                                        <div className="text-3xs text-slate-400 mt-0.5">{sub.respondent_email}</div>
+                                      </td>
+                                      <td className="py-3 px-4 text-slate-500 font-mono text-3xs">
+                                        {new Date(sub.end_time).toLocaleString('pt-BR')}
+                                      </td>
+                                      <td className="py-3 px-4 font-bold text-slate-800">
+                                        {sub.total_score !== undefined ? `${sub.total_score}%` : '—'}
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span className={`px-2 py-1 rounded border font-semibold text-3xs ${riskColor}`}>
+                                          {sub.classification || 'Indefinido'}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                                        <button
+                                          onClick={() => handleDownloadPersonPdf(sub)}
+                                          className="inline-flex items-center gap-1.5 py-1.5 px-2.5 bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 text-3xs font-bold rounded border border-slate-200 cursor-pointer transition-colors mr-1"
+                                          title={`Baixar relatório de ${sub.respondent_name}`}
+                                          aria-label={`Baixar relatório de ${sub.respondent_name}`}
+                                        >
+                                          <FileDown className="w-3.5 h-3.5" /> Usuário
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteResponse(sub)}
+                                          className="inline-flex items-center justify-center p-1.5 bg-slate-100 hover:bg-red-50 hover:text-red-700 text-slate-500 rounded border border-slate-200 cursor-pointer transition-colors"
+                                          title="Excluir este preenchimento e recalcular a área"
+                                          aria-label={`Excluir preenchimento de ${sub.respondent_name}`}
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </React.Fragment>
+                            ))}
+                          </React.Fragment>
+                        ))
                       )}
                     </tbody>
                   </table>

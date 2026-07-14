@@ -1,4 +1,6 @@
 import express from 'express';
+import { getSupabase } from '../lib/supabase';
+import { fallbackResponses } from '../state';
 import { getHistoricalResponses } from '../lib/historical';
 import { authenticateAdmin } from '../lib/auth';
 import { buildExcelBuffer } from '../lib/xlsx';
@@ -56,12 +58,34 @@ router.get('/admin/companies/:cnpj/summary', authenticateAdmin, async (req, res)
   }
 });
 
-// Historical response records are immutable from the report API. Deletion is
-// intentionally disabled so a report action can never erase the source data.
-router.delete('/admin/responses/:id', authenticateAdmin, async (_req, res) => {
-  return res.status(409).json({
-    error: 'O histórico de preenchimentos é protegido e não pode ser excluído por esta aplicação.',
-  });
+// Delete exactly one respondent submission. This never deletes an area,
+// company, or other historical rows; all summaries are recalculated on read.
+router.delete('/admin/responses/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const supabase = getSupabase();
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('responses')
+        .delete()
+        .eq('id', id)
+        .select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        return res.status(404).json({ error: 'Preenchimento não encontrado.' });
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('Error deleting one response from Supabase:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao excluir o preenchimento.' });
+    }
+  }
+
+  const index = fallbackResponses.findIndex((response) => response.id === id);
+  if (index === -1) return res.status(404).json({ error: 'Preenchimento não encontrado.' });
+  fallbackResponses.splice(index, 1);
+  return res.json({ success: true });
 });
 
 // Reset is intentionally disabled: reports must never erase the historical table.
