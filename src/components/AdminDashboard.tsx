@@ -5,7 +5,7 @@ import {
   Trash2, Edit, Save, X, Calendar, Check, AlertTriangle, FileSpreadsheet,
   FileDown, CheckCircle, RefreshCcw, Search, Eye, Filter, Info, Mail, User, Lock, Activity, LifeBuoy
 } from 'lucide-react';
-import { Company, Question, Submission } from '../types';
+import { Company, Question, Submission, ReportSummary } from '../types';
 import { CompanyLogo } from './CompanyLogo';
 
 interface AdminDashboardProps {
@@ -13,15 +13,11 @@ interface AdminDashboardProps {
   onLogout: () => void;
 }
 
-const SQL_SCHEMA_SCRIPT = `-- SCHEMA FOR SUPABASE DATABASE (CONTROL MED)
--- Copy and execute this in your Supabase SQL Editor.
+const SQL_SCHEMA_SCRIPT = `-- SAFE SUPABASE BOOTSTRAP (NON-DESTRUCTIVE)
+-- Does not drop tables, delete rows, or merge historical responses.
+-- Run supabase_migration_areas.sql once to remove the old unique constraint.
 
-DROP FUNCTION IF EXISTS calculate_assessment_score(JSONB);
-DROP TABLE IF EXISTS responses;
-DROP TABLE IF EXISTS questions;
-DROP TABLE IF EXISTS companies;
-
-CREATE TABLE companies (
+CREATE TABLE IF NOT EXISTS companies (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
@@ -32,7 +28,7 @@ CREATE TABLE companies (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
-CREATE TABLE questions (
+CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY,
   section_id INT NOT NULL,
   section_title TEXT NOT NULL,
@@ -42,7 +38,7 @@ CREATE TABLE questions (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
-CREATE TABLE responses (
+CREATE TABLE IF NOT EXISTS responses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT NOT NULL,
   area TEXT NOT NULL DEFAULT 'Geral',
@@ -55,9 +51,13 @@ CREATE TABLE responses (
   total_score NUMERIC NOT NULL,
   classification TEXT NOT NULL,
   section_scores JSONB NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  CONSTRAINT responses_cnpj_area_unique UNIQUE (cnpj, area)
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS areas JSONB NOT NULL DEFAULT '["Geral"]'::jsonb;
+ALTER TABLE responses
+  ADD COLUMN IF NOT EXISTS area TEXT NOT NULL DEFAULT 'Geral';
 
 -- CREATE THE CALCULATION ENGINE FUNCTION (SQL-RPC)
 CREATE OR REPLACE FUNCTION calculate_assessment_score(answers JSONB)
@@ -280,8 +280,8 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
 
   // Responses state
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [reportSummary, setReportSummary] = useState<ReportSummary>({ response_count: 0, companies: [] });
   const [responseSearch, setResponseSearch] = useState('');
-  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   // Global error & success notifications
   const [alertMsg, setAlertMsg] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -310,6 +310,7 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     fetchCompanies();
     fetchQuestions();
     fetchSubmissions();
+    fetchReportSummary();
     fetchEmailConfig();
     fetchAdminProfile();
   }, []);
@@ -541,9 +542,21 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
       if (r.ok) {
         const data = await r.json();
         setSubmissions(data);
+        fetchReportSummary();
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const fetchReportSummary = async () => {
+    try {
+      const r = await fetch('/api/admin/report-summary', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (r.ok) setReportSummary(await r.json());
+    } catch (e) {
+      console.error('Error fetching report summary:', e);
     }
   };
 
@@ -766,47 +779,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
     }
   };
 
-  // Reset period (delete all historical responses)
-  const handleResetResponses = async () => {
-    try {
-      const r = await fetch('/api/admin/reset', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (r.ok) {
-        triggerAlert('success', 'Todas as respostas do período foram limpas e resetadas com sucesso!');
-        setIsResetConfirmOpen(false);
-        fetchSubmissions();
-      } else {
-        triggerAlert('error', 'Erro ao resetar período.');
-      }
-    } catch (e) {
-      triggerAlert('error', 'Erro de conexão.');
-    }
-  };
-
-  // Delete one current response (one CNPJ + area)
-  const handleDeleteResponse = async (sub: Submission) => {
-    const area = sub.area || 'Geral';
-    if (!confirm(`Deseja excluir a resposta da área "${area}" para o CNPJ ${formatCNPJ(sub.cnpj)}?`)) return;
-
-    try {
-      const r = await fetch(`/api/admin/responses/${sub.id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await r.json().catch(() => ({}));
-      if (r.ok) {
-        triggerAlert('success', 'Resposta da área excluída com sucesso.');
-        fetchSubmissions();
-      } else {
-        triggerAlert('error', data.error || 'Erro ao excluir resposta.');
-      }
-    } catch (e) {
-      triggerAlert('error', 'Erro de conexão ao excluir resposta.');
-    }
-  };
-
   // Export excel
   const handleExportExcel = async () => {
     try {
@@ -868,19 +840,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
 
   const normalizeCnpj = (value: string) => value.replace(/\D/g, '');
 
-  const companyCnpjs: string[] = Array.from(new Set<string>(submissions.map((submission) => normalizeCnpj(String(submission.cnpj)))));
-  const companySummaries: Array<{
-    cnpj: string;
-    company_name: string;
-    areas: string[];
-    average: number;
-    classification: string;
-  }> = companyCnpjs.map((cnpj) => {
-    const current = submissions.filter((submission) => normalizeCnpj(String(submission.cnpj)) === cnpj);
-    const average = current.reduce((sum, submission) => sum + Number(submission.total_score || 0), 0) / current.length;
-    const classification = average > 80 ? 'Crítico' : average > 60 ? 'Alto' : average > 40 ? 'Médio' : average > 20 ? 'Moderado' : 'Baixo';
-    return { cnpj, company_name: String(current[0].company_name), areas: current.map((submission) => submission.area || 'Geral'), average, classification };
-  });
 
   return (
     <div className="min-h-screen bg-slate-50 flex" id="admin-dashboard-container">
@@ -1210,73 +1169,184 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
           {activeTab === 'responses' && (
             <div className="space-y-6">
               {/* Quick Summary Widgets */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-6">
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Avaliações Recebidas</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">{submissions.length}</p>
+                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Preenchimentos Recebidos</p>
+                  <p className="text-2xl font-bold text-slate-800 mt-1">{reportSummary.response_count || submissions.length}</p>
                 </div>
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Classificação Média</p>
+                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Pessoas Únicas</p>
+                  <p className="text-2xl font-bold text-slate-800 mt-1">
+                    {reportSummary.companies.reduce((total, company) => total + company.people_count, 0)}
+                  </p>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
+                  <p className="text-2xs font-mono text-slate-400 uppercase font-bold tracking-wide">Média Geral</p>
                   <p className="text-xl font-bold text-slate-800 mt-1">
-                    {submissions.length > 0 
+                    {submissions.length > 0
                       ? `${(submissions.reduce((acc, curr) => acc + (curr.total_score || 0), 0) / submissions.length).toFixed(1)}%`
                       : 'N/A'}
                   </p>
                 </div>
                 
                 {/* Admin Reset and Export Buttons */}
-                <div className="sm:col-span-2 bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex flex-col justify-center gap-3">
-                  <div className="flex gap-2">
+                  <div className="sm:col-span-2 bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex flex-col justify-center gap-3">
                     <button
                       onClick={handleExportExcel}
                       disabled={submissions.length === 0}
-                      className="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
+                      className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
                     >
-                      <FileSpreadsheet className="w-4 h-4" /> Extrair Banco de Dados (Excel)
+                      <FileSpreadsheet className="w-4 h-4" /> Extrair histórico e relatório (Excel)
                     </button>
-                    
-                    <button
-                      onClick={() => setIsResetConfirmOpen(true)}
-                      className="py-2.5 px-3 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer border border-red-200 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" /> Resetar Último Período
-                    </button>
+                    <p className="text-3xs text-slate-400 text-center font-sans">
+                      A exportação lê todas as linhas do histórico. Nenhum preenchimento é apagado ou substituído.
+                    </p>
                   </div>
-                  <p className="text-3xs text-slate-400 text-center font-sans">
-                    O reset apaga permanentemente todas as respostas do período para iniciar um novo ciclo de entrevistas.
-                  </p>
-                </div>
               </div>
 
-              {/* Consolidated company averages */}
-              {companySummaries.length > 0 && (
-                <div className="bg-white border border-slate-200 rounded-xl shadow-xs p-5">
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">Consolidado por empresa</h3>
-                      <p className="text-3xs text-slate-400 mt-1">Média das respostas vigentes por área. Cada área conta uma vez.</p>
-                    </div>
-                    <span className="text-3xs font-mono text-slate-400">{companySummaries.length} empresa(s)</span>
+              {/* Hierarchical report: person -> area -> company */}
+              {reportSummary.companies.length > 0 && (
+                <div className="space-y-6">
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-900">
+                    <strong>Critério do relatório:</strong> todos os preenchimentos são considerados. As médias são calculadas no nível da pessoa, depois agrupadas por área e, por fim, consolidadas por empresa.
                   </div>
-                  <div className="grid md:grid-cols-2 gap-3">
-                    {companySummaries.map((summary) => (
-                      <div key={summary.cnpj} className="border border-slate-200 rounded-lg p-4 flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="font-bold text-slate-800 truncate">{summary.company_name}</p>
-                          <p className="text-3xs font-mono text-slate-400">{formatCNPJ(summary.cnpj)}</p>
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {summary.areas.map((area) => (
-                              <span key={area} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-3xs">{area}</span>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-xl font-black text-slate-800">{summary.average.toFixed(1)}%</p>
-                          <p className="text-3xs font-bold text-slate-500">{summary.classification}</p>
+
+                  {reportSummary.companies.map((company) => (
+                    <div key={company.cnpj} className="bg-white border border-slate-200 rounded-xl shadow-xs p-5 space-y-6">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">{company.company_name}</h3>
+                        <p className="text-3xs font-mono text-slate-400 mt-1">{formatCNPJ(company.cnpj)}</p>
+                        <div className="flex flex-wrap gap-2 mt-3 text-3xs">
+                          <span className="px-2 py-1 rounded bg-blue-50 text-blue-700 border border-blue-100 font-semibold">
+                            {company.people_count} pessoa(s) única(s)
+                          </span>
+                          <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                            {company.response_count} preenchimento(s)
+                          </span>
                         </div>
                       </div>
-                    ))}
-                  </div>
+
+                      <section>
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-800">1. Resultado por pessoa</h4>
+                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos feitos pela mesma pessoa.</p>
+                          </div>
+                          <span className="text-3xs font-mono text-slate-400">{company.people_count} pessoa(s)</span>
+                        </div>
+                        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                          <table className="w-full text-left border-collapse min-w-[720px]">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-3xs font-semibold">
+                                <th className="py-2.5 px-3">Pessoa</th>
+                                <th className="py-2.5 px-3">Áreas</th>
+                                <th className="py-2.5 px-3">Preenchimentos</th>
+                                <th className="py-2.5 px-3">Média (%)</th>
+                                <th className="py-2.5 px-3">Classificação</th>
+                              </tr>
+                            </thead>
+                            <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
+                              {company.people.map((person) => (
+                                <tr key={`${person.respondent_email}-${person.respondent_name}`}>
+                                  <td className="py-2.5 px-3">
+                                    <div className="font-semibold">{person.respondent_name}</div>
+                                    <div className="text-3xs text-slate-400">{person.respondent_email}</div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-3xs text-slate-500">{person.areas.join(', ')}</td>
+                                  <td className="py-2.5 px-3 font-mono">{person.response_count}</td>
+                                  <td className="py-2.5 px-3 font-bold">{person.total_score}%</td>
+                                  <td className="py-2.5 px-3">{person.classification}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+
+                      <section>
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-800">2. Resultado por área</h4>
+                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos realizados na área.</p>
+                          </div>
+                          <span className="text-3xs font-mono text-slate-400">{company.areas.length} área(s)</span>
+                        </div>
+                        <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                          <table className="w-full text-left border-collapse min-w-[720px]">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-3xs font-semibold">
+                                <th className="py-2.5 px-3">Área</th>
+                                <th className="py-2.5 px-3">Pessoas</th>
+                                <th className="py-2.5 px-3">Preenchimentos</th>
+                                <th className="py-2.5 px-3">Média (%)</th>
+                                <th className="py-2.5 px-3">Classificação</th>
+                              </tr>
+                            </thead>
+                            <tbody className="text-xs text-slate-700 divide-y divide-slate-100">
+                              {company.areas.map((area) => (
+                                <tr key={area.area}>
+                                  <td className="py-2.5 px-3 font-semibold">{area.area}</td>
+                                  <td className="py-2.5 px-3">{area.respondent_count}</td>
+                                  <td className="py-2.5 px-3 font-mono">{area.response_count}</td>
+                                  <td className="py-2.5 px-3 font-bold">{area.total_score}%</td>
+                                  <td className="py-2.5 px-3">{area.classification}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {company.areas.map((area) => (
+                          <div key={`responses-${area.area}`} className="border border-blue-100 rounded-lg overflow-hidden mt-4">
+                            <div className="bg-blue-50 px-3 py-2 text-3xs font-semibold text-blue-800">
+                              Preenchimentos individuais da área {area.area} — nenhuma linha foi consolidada ou substituída
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse min-w-[980px]">
+                                <thead>
+                                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-3xs font-semibold">
+                                    <th className="py-2 px-3">Nº</th>
+                                    <th className="py-2 px-3">Pessoa</th>
+                                    <th className="py-2 px-3">E-mail</th>
+                                    <th className="py-2 px-3">Início</th>
+                                    <th className="py-2 px-3">Fim</th>
+                                    <th className="py-2 px-3">Pontuação</th>
+                                    <th className="py-2 px-3">Classificação</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="text-3xs text-slate-700 divide-y divide-slate-100">
+                                  {area.responses.map((response, responseIndex) => (
+                                    <tr key={response.id || `${area.area}-${responseIndex}`}>
+                                      <td className="py-2 px-3 font-mono">{responseIndex + 1}</td>
+                                      <td className="py-2 px-3 font-semibold">{response.respondent_name}</td>
+                                      <td className="py-2 px-3 text-slate-500">{response.respondent_email}</td>
+                                      <td className="py-2 px-3 font-mono text-slate-500">{new Date(response.start_time).toLocaleString('pt-BR')}</td>
+                                      <td className="py-2 px-3 font-mono text-slate-500">{new Date(response.end_time).toLocaleString('pt-BR')}</td>
+                                      <td className="py-2 px-3 font-bold">{response.total_score ?? '—'}%</td>
+                                      <td className="py-2 px-3">{response.classification || 'Indefinido'}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ))}
+                        </section>
+
+                      <section className="border-t border-slate-200 pt-5">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-800">3. Resultado por empresa</h4>
+                            <p className="text-3xs text-slate-400 mt-1">Média de todos os preenchimentos da empresa.</p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-2xl font-black text-slate-800">{company.total_score}%</p>
+                            <p className="text-3xs font-bold text-slate-500">{company.classification}</p>
+                          </div>
+                        </div>
+                        <p className="text-3xs text-slate-500 mt-3">{company.response_count} preenchimento(s) de {company.people_count} pessoa(s) única(s) considerado(s) no consolidado.</p>
+                      </section>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -1353,13 +1423,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                                   className="inline-flex items-center gap-1 py-1.5 px-3 bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 text-3xs font-bold rounded border border-slate-200 transition-all cursor-pointer"
                                 >
                                   <FileDown className="w-3 h-3" /> PDF
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteResponse(sub)}
-                                  className="inline-flex items-center gap-1 py-1.5 px-2 bg-red-50 hover:bg-red-600 hover:text-white text-red-700 text-3xs font-bold rounded border border-red-200 transition-all cursor-pointer"
-                                  title="Excluir resposta desta área"
-                                >
-                                  <Trash2 className="w-3 h-3" />
                                 </button>
                               </td>
                             </tr>
@@ -2240,41 +2303,6 @@ export default function AdminDashboard({ token, onLogout }: AdminDashboardProps)
                 <Save className="w-4 h-4" /> Salvar Pergunta
               </button>
             </form>
-          </motion.div>
-        </div>
-      )}
-
-      {/* RESET CONFIRMATION DIALOG */}
-      {isResetConfirmOpen && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-white border border-red-200 rounded-2xl p-6 shadow-xl w-full max-w-sm text-center relative"
-          >
-            <div className="w-12 h-12 bg-red-50 rounded-full flex items-center justify-center text-red-600 mx-auto mb-4">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-
-            <h3 className="text-base font-bold text-slate-900 mb-2">Aviso de Exclusão Permanente!</h3>
-            <p className="text-xs text-slate-500 mb-6 leading-relaxed">
-              Você está prestes a <strong>limpar todas as respostas do último período</strong> de entrevistas. Esta ação não poderá ser desfeita. Todos os dados brutos de respondentes e questionários serão removidos.
-            </p>
-
-            <div className="flex gap-3 justify-center">
-              <button
-                onClick={() => setIsResetConfirmOpen(false)}
-                className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg cursor-pointer transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleResetResponses}
-                className="py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors"
-              >
-                Sim, Resetar Tudo
-              </button>
-            </div>
           </motion.div>
         </div>
       )}

@@ -109,26 +109,36 @@ router.delete('/admin/companies/:id', authenticateAdmin, async (req, res) => {
       if (lookupError) throw lookupError;
       if (!company) return res.status(404).json({ error: 'Empresa não encontrada.' });
 
-      const { error: responsesError } = await supabase.from('responses').delete().eq('cnpj', company.cnpj);
+      const { count, error: responsesError } = await supabase
+        .from('responses')
+        .select('id', { count: 'exact', head: true })
+        .eq('cnpj', company.cnpj);
       if (responsesError) throw responsesError;
+      if ((count || 0) > 0) {
+        return res.status(409).json({
+          error: 'Esta empresa possui histórico de preenchimentos e não pode ser excluída. Desabilite-a para preservar os dados.',
+        });
+      }
 
       const { error } = await supabase.from('companies').delete().eq('id', id);
       if (error) throw error;
       return res.json({ success: true });
     } catch (err: any) {
-      console.warn('Erro ao deletar empresa do Supabase, usando fallback local:', err.message || err);
+      console.error('Erro ao excluir empresa do Supabase:', err);
+      return res.status(500).json({ error: err.message || 'Erro ao excluir empresa.' });
     }
   }
 
   const idx = fallbackCompanies.findIndex(c => c.id === id || c.cnpj === id);
   if (idx !== -1) {
     const deletedCnpj = cleanCNPJ(fallbackCompanies[idx].cnpj);
-    fallbackCompanies.splice(idx, 1);
-    for (let responseIndex = fallbackResponses.length - 1; responseIndex >= 0; responseIndex -= 1) {
-      if (cleanCNPJ(fallbackResponses[responseIndex].cnpj) === deletedCnpj) {
-        fallbackResponses.splice(responseIndex, 1);
-      }
+    const hasResponses = fallbackResponses.some((response) => cleanCNPJ(response.cnpj) === deletedCnpj);
+    if (hasResponses) {
+      return res.status(409).json({
+        error: 'Esta empresa possui histórico de preenchimentos e não pode ser excluída. Desabilite-a para preservar os dados.',
+      });
     }
+    fallbackCompanies.splice(idx, 1);
     return res.json({ success: true });
   }
   return res.status(404).json({ error: 'Empresa não encontrada.' });

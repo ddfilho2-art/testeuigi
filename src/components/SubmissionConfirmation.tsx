@@ -6,7 +6,6 @@ interface SubmissionConfirmationProps {
   respondentName: string;
   companyName: string;
   area: string;
-  replaced?: boolean;
   onBackToHome: () => void;
 }
 
@@ -14,7 +13,6 @@ export default function SubmissionConfirmation({
   respondentName,
   companyName,
   area,
-  replaced,
   onBackToHome,
 }: SubmissionConfirmationProps) {
   return (
@@ -29,11 +27,9 @@ export default function SubmissionConfirmation({
           <p className="text-sm text-slate-600 mt-3 leading-relaxed">
             Obrigado, {respondentName}. Sua resposta da área <strong>{area}</strong> para a empresa <strong>{companyName}</strong> foi registrada.
           </p>
-          {replaced && (
-            <p className="mt-4 rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-              A resposta anterior desta área foi substituída por este preenchimento.
-            </p>
-          )}
+          <p className="text-xs text-blue-700 mt-4 leading-relaxed">
+            Este preenchimento foi adicionado ao histórico. Todos os preenchimentos da empresa serão considerados nas médias por pessoa, área e empresa.
+          </p>
           <p className="text-xs text-slate-500 mt-4 leading-relaxed">
             O relatório e os resultados ficam disponíveis exclusivamente para o administrador responsável.
           </p>

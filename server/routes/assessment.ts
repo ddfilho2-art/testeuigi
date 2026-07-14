@@ -28,8 +28,8 @@ router.get('/assessment/questions', async (_req, res) => {
   return res.json([...fallbackQuestions].sort((a, b) => a.section_id - b.section_id));
 });
 
-// Submit one current response per company/area. A later submission replaces
-// the previous response for the same CNPJ and area.
+// Every submission is historical data. A later submission for the same
+// CNPJ, area, or person is inserted as a new response and never replaces one.
 router.post('/assessment/submit', async (req, res) => {
   const {
     cnpj,
@@ -112,7 +112,7 @@ router.post('/assessment/submit', async (req, res) => {
     try {
       const { data, error } = await supabase
         .from('responses')
-        .upsert([submission], { onConflict: 'cnpj,area' })
+        .insert([submission])
         .select()
         .single();
       if (error) throw error;
@@ -125,24 +125,26 @@ router.post('/assessment/submit', async (req, res) => {
       // data to the respondent. Reports are admin-only.
       return res.json({
         success: true,
-        replaced: access.submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === requestedArea.toLowerCase()),
         message: 'Resposta registrada com sucesso. O relatório ficará disponível apenas para o administrador.',
       });
     } catch (err: any) {
-      console.error('Error upserting submission in Supabase, falling back to local memory storage:', err);
+      console.error('Error inserting submission in Supabase:', err);
+      if (err?.code === '23505' || String(err?.message || '').toLowerCase().includes('unique')) {
+        return res.status(500).json({
+          error: 'O banco ainda possui a restrição antiga de uma resposta por área. Execute a migração histórica sem apagar dados e tente novamente.',
+        });
+      }
+      return res.status(500).json({
+        error: 'Não foi possível registrar a resposta no banco. Nenhum dado foi substituído. Tente novamente.',
+      });
     }
   }
 
-  const existingIndex = fallbackResponses.findIndex(
-    (response) => cleanCNPJ(response.cnpj) === cleanedCnpj && (response.area || 'Geral').toLowerCase() === requestedArea.toLowerCase(),
-  );
-  const replaced = existingIndex !== -1;
   const fallbackSubmission: Submission = {
     ...submission,
-    id: `${cleanedCnpj}-${canonicalArea.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    id: `${cleanedCnpj}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
   };
-  if (replaced) fallbackResponses[existingIndex] = fallbackSubmission;
-  else fallbackResponses.push(fallbackSubmission);
+  fallbackResponses.push(fallbackSubmission);
 
   sendSubmissionNotification(fallbackSubmission, result).catch((err) =>
     console.error('Error in background email notification:', err),
@@ -150,7 +152,6 @@ router.post('/assessment/submit', async (req, res) => {
 
   return res.json({
     success: true,
-    replaced,
     message: 'Resposta registrada com sucesso. O relatório ficará disponível apenas para o administrador.',
   });
 });

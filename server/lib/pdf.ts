@@ -1,5 +1,5 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import type { Submission } from '../../src/types';
+import type { CompanySummary, Submission } from '../../src/types';
 import { cleanCNPJ } from './cnpj';
 
 const SECTION_NAMES: Record<string, string> = {
@@ -15,7 +15,7 @@ const SECTION_NAMES: Record<string, string> = {
   '10': '10. Sintomas de Estresse'
 };
 
-export async function generatePdfBuffer(submission: Submission): Promise<Buffer> {
+export async function generatePdfBuffer(submission: Submission, companySummary?: CompanySummary): Promise<Buffer> {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([595.275, 841.89]); // A4 paper size in points
   const { width, height } = page.getSize();
@@ -198,6 +198,124 @@ export async function generatePdfBuffer(submission: Submission): Promise<Buffer>
     font: font,
     color: textLightGray,
   });
+
+  if (companySummary) {
+    const drawSummaryTablePage = (
+      title: string,
+      headers: string[],
+      rows: string[][],
+      columnXs: number[],
+    ) => {
+      let summaryPage = pdfDoc.addPage([595.275, 841.89]);
+      const drawSummaryHeader = () => {
+        const summaryHeight = summaryPage.getHeight();
+        summaryPage.drawText('CONTROL MED', { x: 35, y: summaryHeight - 45, size: 18, font: fontBold, color: primaryGreen });
+        summaryPage.drawText(title, { x: 35, y: summaryHeight - 75, size: 13, font: fontBold, color: primaryGreen });
+        summaryPage.drawText(`Empresa: ${companySummary.company_name} | CNPJ: ${companySummary.cnpj}`, {
+          x: 35,
+          y: summaryHeight - 95,
+          size: 8,
+          font,
+          color: textLightGray,
+        });
+      };
+      const drawSummaryColumns = (y: number) => {
+        headers.forEach((header, index) => {
+          summaryPage.drawText(header, { x: columnXs[index], y, size: 8, font: fontBold, color: primaryGreen });
+        });
+      };
+
+      drawSummaryHeader();
+      let summaryY = summaryPage.getHeight() - 125;
+      drawSummaryColumns(summaryY);
+      summaryY -= 18;
+
+      rows.forEach((row, index) => {
+        if (summaryY < 55) {
+          summaryPage = pdfDoc.addPage([595.275, 841.89]);
+          drawSummaryHeader();
+          summaryY = summaryPage.getHeight() - 125;
+          drawSummaryColumns(summaryY);
+          summaryY -= 18;
+        }
+
+        if (index % 2 === 0) {
+          summaryPage.drawRectangle({
+            x: 30,
+            y: summaryY - 4,
+            width: width - 60,
+            height: 18,
+            color: rgb(0.97, 0.97, 0.97),
+          });
+        }
+        row.forEach((value, valueIndex) => {
+          summaryPage.drawText(String(value), {
+            x: columnXs[valueIndex],
+            y: summaryY + 2,
+            size: 8,
+            font,
+            color: textGray,
+          });
+        });
+        summaryY -= 20;
+      });
+    };
+
+    drawSummaryTablePage(
+      '1. RESULTADOS POR PESSOA',
+      ['Pessoa', 'E-mail', 'Preench.', 'Média (%)', 'Classificação'],
+      companySummary.people.map((person) => [
+        person.respondent_name,
+        person.respondent_email,
+        String(person.response_count),
+        `${person.total_score}%`,
+        person.classification,
+      ]),
+      [35, 190, 405, 455, 510],
+    );
+
+    drawSummaryTablePage(
+      '2. RESULTADOS POR ÁREA',
+      ['Área', 'Pessoas', 'Preench.', 'Média (%)', 'Classificação'],
+      companySummary.areas.map((area) => [
+        area.area,
+        String(area.respondent_count),
+        String(area.response_count),
+        `${area.total_score}%`,
+        area.classification,
+      ]),
+      [35, 355, 410, 460, 510],
+    );
+
+    drawSummaryTablePage(
+      '3. RESULTADO POR EMPRESA',
+      ['Empresa', 'Pessoas', 'Preench.', 'Média (%)', 'Classificação'],
+      [[
+        companySummary.company_name,
+        String(companySummary.people_count),
+        String(companySummary.response_count),
+        `${companySummary.total_score}%`,
+        companySummary.classification,
+      ]],
+      [35, 350, 405, 460, 510],
+    );
+    for (const area of companySummary.areas) {
+      drawSummaryTablePage(
+        `PREENCHIMENTOS INDIVIDUAIS — ${area.area}`,
+        ['Nº', 'Pessoa', 'E-mail', 'Início', 'Fim', 'Score', 'Classificação'],
+        area.responses.map((response, index) => [
+          String(index + 1),
+          response.respondent_name,
+          response.respondent_email,
+          new Date(response.start_time).toLocaleString('pt-BR'),
+          new Date(response.end_time).toLocaleString('pt-BR'),
+          `${response.total_score ?? '—'}%`,
+          response.classification || 'Indefinido',
+        ]),
+        [30, 55, 165, 315, 390, 465, 510],
+      );
+    }
+  }
 
   const pdfBytes = await pdfDoc.save();
   return Buffer.from(pdfBytes);

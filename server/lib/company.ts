@@ -1,5 +1,5 @@
 import { getSupabase } from "./supabase";
-import { fallbackCompanies, fallbackResponses } from "../state";
+import { fallbackCompanies } from "../state";
 import { cleanCNPJ } from "./cnpj";
 import type { Company } from "../../src/types";
 
@@ -7,7 +7,6 @@ export interface CompanyCheckResult {
   valid: boolean;
   company?: Company;
   areas: string[];
-  submittedAreas: string[];
   error?: string;
 }
 
@@ -34,8 +33,7 @@ export async function checkCompanyAccess(cnpj: string): Promise<CompanyCheckResu
         const company = data[0] as Company | undefined;
         const access = evaluate(company, now);
         if (!access.valid || !company) return access;
-        const submittedAreas = await getSubmittedAreas(supabase, cleanedTarget);
-        return { ...access, areas: normalizeAreas(company.areas), submittedAreas };
+        return { ...access, areas: normalizeAreas(company.areas) };
       }
     } catch (err) {
       console.error("Error checking company access in Supabase:", err);
@@ -45,8 +43,7 @@ export async function checkCompanyAccess(cnpj: string): Promise<CompanyCheckResu
   const company = fallbackCompanies.find((c) => cleanCNPJ(c.cnpj) === cleanedTarget);
   const access = evaluate(company, now);
   if (!access.valid || !company) return access;
-  const submittedAreas = fallbackResponsesForCompany(cleanedTarget);
-  return { ...access, areas: normalizeAreas(company.areas), submittedAreas };
+  return { ...access, areas: normalizeAreas(company.areas) };
 }
 
 export function normalizeAreas(areas: unknown): string[] {
@@ -58,28 +55,12 @@ export function normalizeAreas(areas: unknown): string[] {
   return [...new Set(normalized)].length ? [...new Set(normalized)] : ["Geral"];
 }
 
-async function getSubmittedAreas(supabase: any, cnpj: string): Promise<string[]> {
-  const { data, error } = await supabase.from("responses").select("area").eq("cnpj", cnpj);
-  if (error || !data) return [];
-  return [...new Set((data as Array<{ area?: string }>).map((row) => row.area || "Geral"))];
-}
-
-function fallbackResponsesForCompany(cnpj: string): string[] {
-  return [
-    ...new Set(
-      fallbackResponses
-        .filter((response) => cleanCNPJ(response.cnpj) === cnpj)
-        .map((response) => response.area || "Geral"),
-    ),
-  ];
-}
-
 function evaluate(company: Company | undefined, now: Date): CompanyCheckResult {
   if (!company) {
-    return { valid: false, areas: [], submittedAreas: [], error: "CNPJ não cadastrado ou não habilitado." };
+    return { valid: false, areas: [], error: "CNPJ não cadastrado ou não habilitado." };
   }
   if (!company.enabled) {
-    return { valid: false, areas: [], submittedAreas: [], error: "Este CNPJ está desabilitado pelo administrador." };
+    return { valid: false, areas: [], error: "Este CNPJ está desabilitado pelo administrador." };
   }
 
   const fromDate = new Date(company.enabled_from);
@@ -91,10 +72,9 @@ function evaluate(company: Company | undefined, now: Date): CompanyCheckResult {
     return {
       valid: false,
       areas: [],
-      submittedAreas: [],
       error: `Fora do período de resposta cadastrado (De ${new Date(company.enabled_from).toLocaleDateString("pt-BR")} até ${new Date(company.enabled_until).toLocaleDateString("pt-BR")}).`,
     };
   }
 
-  return { valid: true, company, areas: normalizeAreas(company.areas), submittedAreas: [] };
+  return { valid: true, company, areas: normalizeAreas(company.areas) };
 }

@@ -5,18 +5,11 @@
 -- storage buckets used by the application.
 -- ============================================================
 
--- Drop existing objects so the script is idempotent (re-runnable).
-DROP FUNCTION IF EXISTS calculate_assessment_score(JSONB);
-DROP TABLE IF EXISTS responses;
-DROP TABLE IF EXISTS questions;
-DROP TABLE IF EXISTS companies;
+-- Safe bootstrap for Supabase. This script is non-destructive:
+-- it never drops tables, deletes rows, or merges historical responses.
+-- Use supabase_migration_areas.sql once to remove the old unique constraint.
 
--- ------------------------------------------------------------
--- Table: companies
--- Stores the client companies allowed to take the assessment.
--- cnpj is normalized to digits-only (14 chars) by the backend.
--- ------------------------------------------------------------
-CREATE TABLE companies (
+CREATE TABLE IF NOT EXISTS companies (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
@@ -32,7 +25,7 @@ CREATE TABLE companies (
 -- The assessment questions. type is 'scale' (1-5) or 'boolean'.
 -- is_inverted flips the scale direction for scoring.
 -- ------------------------------------------------------------
-CREATE TABLE questions (
+CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY,
   section_id INT NOT NULL,
   section_title TEXT NOT NULL,
@@ -43,11 +36,10 @@ CREATE TABLE questions (
 );
 
 -- ------------------------------------------------------------
--- Table: responses
--- One current response per company/area. A later submission for the
--- same CNPJ and area replaces the previous response.
+-- Historical response table: every form submission is retained, including
+-- multiple submissions from the same person, area, or company.
 -- ------------------------------------------------------------
-CREATE TABLE responses (
+CREATE TABLE IF NOT EXISTS responses (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   cnpj TEXT NOT NULL,
   area TEXT NOT NULL DEFAULT 'Geral',
@@ -60,15 +52,22 @@ CREATE TABLE responses (
   total_score NUMERIC NOT NULL,
   classification TEXT NOT NULL,
   section_scores JSONB NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  CONSTRAINT responses_cnpj_area_unique UNIQUE (cnpj, area)
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- Add area support to databases created before the area feature.
+-- Existing response rows are preserved; legacy rows receive the explicit
+-- default area only because the column did not exist in the old schema.
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS areas JSONB NOT NULL DEFAULT '["Geral"]'::jsonb;
+ALTER TABLE responses
+  ADD COLUMN IF NOT EXISTS area TEXT NOT NULL DEFAULT 'Geral';
+
 -- Helpful indexes for the common query patterns used by the API.
-CREATE INDEX idx_companies_cnpj ON companies (cnpj);
-CREATE INDEX idx_responses_cnpj ON responses (cnpj);
-CREATE INDEX idx_responses_created_at ON responses (created_at DESC);
-CREATE INDEX idx_responses_cnpj_area ON responses (cnpj, area);
+CREATE INDEX IF NOT EXISTS idx_companies_cnpj ON companies (cnpj);
+CREATE INDEX IF NOT EXISTS idx_responses_cnpj ON responses (cnpj);
+CREATE INDEX IF NOT EXISTS idx_responses_created_at ON responses (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_responses_cnpj_area ON responses (cnpj, area);
 
 -- ============================================================
 -- CALCULATION ENGINE FUNCTION (SQL-RPC)

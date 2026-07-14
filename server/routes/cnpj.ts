@@ -18,7 +18,6 @@ router.post('/cnpj/validate', async (req, res) => {
     companyName: result.company!.name,
     cnpj: result.company!.cnpj,
     areas: result.areas,
-    submittedAreas: result.submittedAreas,
   });
 });
 

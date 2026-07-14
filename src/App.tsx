@@ -37,7 +37,6 @@ export default function App() {
       respondent_name: data.respondent_name,
       company_name: data.company_name,
       area: data.area,
-      replaced: data.replaced,
     });
   };
 
@@ -56,7 +55,6 @@ export default function App() {
             respondentName={submissionData.respondent_name}
             companyName={submissionData.company_name}
             area={submissionData.area}
-            replaced={submissionData.replaced}
             onBackToHome={() => {
               setSubmissionData(null);
               setRole('home');

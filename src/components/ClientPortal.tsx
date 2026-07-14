@@ -21,7 +21,6 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
   const [respondentEmail, setRespondentEmail] = useState('');
   const [areas, setAreas] = useState<string[]>([]);
   const [selectedArea, setSelectedArea] = useState('');
-  const [submittedAreas, setSubmittedAreas] = useState<string[]>([]);
   const [isValidating, setIsValidating] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [lgpdAccepted, setLgpdAccepted] = useState(false);
@@ -45,15 +44,6 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
     if (!area) {
       setSelectedArea('');
       return;
-    }
-    if (submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase())) {
-      const replace = window.confirm(
-        'Esse formulário para essa área já foi preenchido. Deseja preencher novamente? A nova resposta substituirá a anterior.',
-      );
-      if (!replace) {
-        setSelectedArea('');
-        return;
-      }
     }
     setSelectedArea(area);
     setAnswers({});
@@ -180,7 +170,6 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
         setCompanyName(data.companyName);
         setValidatedCnpj(data.cnpj);
         setAreas(data.areas || ['Geral']);
-        setSubmittedAreas(data.submittedAreas || []);
         setSelectedArea('');
         setStartTime(new Date().toISOString());
         setAuthError(null);
@@ -443,15 +432,13 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                       <option value="">Selecione uma área</option>
                       {areas.map((area) => (
                         <option key={area} value={area}>
-                          {area}{submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase()) ? ' (já preenchida)' : ''}
+                          {area}
                         </option>
                       ))}
                     </select>
-                    {submittedAreas.length > 0 && (
-                      <p className="mt-2 text-3xs text-amber-700">
-                        Uma área já preenchida pedirá confirmação antes de substituir a resposta anterior.
-                      </p>
-                    )}
+                    <p className="mt-2 text-3xs text-blue-700">
+                      Cada preenchimento é registrado separadamente e compõe as médias do relatório.
+                    </p>
                   </div>
                 )}
 
@@ -520,15 +507,13 @@ export default function ClientPortal({ onBackToHome, onSubmissionSuccess }: Clie
                   <option value="">Selecione uma área</option>
                   {areas.map((area) => (
                     <option key={area} value={area}>
-                      {area}{submittedAreas.some((submittedArea) => submittedArea.toLowerCase() === area.toLowerCase()) ? ' (já preenchida)' : ''}
+                      {area}
                     </option>
                   ))}
                 </select>
-                {submittedAreas.length > 0 && (
-                  <p className="mt-2 text-3xs text-amber-700">
-                    Áreas marcadas como já preenchidas pedirão confirmação antes de substituir a resposta anterior.
-                  </p>
-                )}
+                <p className="mt-2 text-3xs text-blue-700">
+                  Todos os preenchimentos são mantidos no histórico e considerados no relatório.
+                </p>
               </div>
 
               {/* Progress Tracker */}

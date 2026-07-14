@@ -57,3 +57,73 @@ export interface Submission {
   section_scores?: Record<string, SectionScore>;
   created_at?: string;
 }
+
+export interface SubmissionSummaryItem {
+  id?: string;
+  area: string;
+  total_score?: number;
+  classification?: string;
+  created_at?: string;
+  end_time: string;
+}
+
+export interface PersonSummary {
+  respondent_name: string;
+  respondent_email: string;
+  response_count: number;
+  total_score: number;
+  classification: string;
+  section_scores: Record<string, SectionScore>;
+  areas: string[];
+  submissions: SubmissionSummaryItem[];
+}
+
+export interface AreaRespondentSummary {
+  respondent_name: string;
+  respondent_email: string;
+  response_count: number;
+  total_score: number;
+  classification: string;
+}
+
+export interface AreaResponseSummary {
+  id?: string;
+  area: string;
+  respondent_name: string;
+  respondent_email: string;
+  start_time: string;
+  end_time: string;
+  answers: Record<string, string | number>;
+  section_scores?: Record<string, SectionScore>;
+  total_score?: number;
+  classification?: string;
+  created_at?: string;
+}
+
+export interface AreaSummary {
+  area: string;
+  response_count: number;
+  respondent_count: number;
+  total_score: number;
+  classification: string;
+  section_scores: Record<string, SectionScore>;
+  respondents: AreaRespondentSummary[];
+  responses: AreaResponseSummary[];
+}
+
+export interface CompanySummary {
+  cnpj: string;
+  company_name: string;
+  response_count: number;
+  people_count: number;
+  total_score: number;
+  classification: string;
+  section_scores: Record<string, SectionScore>;
+  people: PersonSummary[];
+  areas: AreaSummary[];
+}
+
+export interface ReportSummary {
+  response_count: number;
+  companies: CompanySummary[];
+}
